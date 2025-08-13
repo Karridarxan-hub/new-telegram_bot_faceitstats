@@ -1,0 +1,1 @@
+# FACEIT API package
