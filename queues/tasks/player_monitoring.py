@@ -7,6 +7,7 @@ API calls during user interactions.
 
 import logging
 import asyncio
+import time
 import json
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any, Tuple
@@ -159,7 +160,7 @@ def monitor_player_matches_task(
             
             # Rate limiting between batches
             if i + batch_size < len(users_to_monitor):
-                await asyncio.sleep(2)
+                time.sleep(2)
         
         # Compile final results
         successful_monitoring = len([r for r in results if r.success])
@@ -237,7 +238,7 @@ def update_player_statistics_task(
                     cache_updates += result.updates_applied
                 
                 # Rate limiting
-                await asyncio.sleep(0.5)
+                time.sleep(0.5)
                 
             except Exception as e:
                 logger.error(f"Error updating player {player_id}: {e}")
@@ -374,7 +375,7 @@ def batch_update_players_task(
             
             # Delay between batches to respect rate limits
             if batch_num < total_batches - 1:
-                await asyncio.sleep(10)
+                time.sleep(10)
         
         # Update completion timestamps
         for user in users_to_update[:total_successful]:
@@ -493,7 +494,7 @@ def check_elo_changes_task(
                 ))
                 
                 # Rate limiting
-                await asyncio.sleep(0.3)
+                time.sleep(0.3)
                 
             except Exception as e:
                 logger.error(f"Error checking ELO for player {user.faceit_player_id}: {e}")
@@ -621,7 +622,7 @@ def track_player_activity_task(
                     inactive_players.append(activity_data)
                 
                 # Rate limiting
-                await asyncio.sleep(0.5)
+                time.sleep(0.5)
                 
             except Exception as e:
                 logger.error(f"Error tracking activity for player {user.faceit_player_id}: {e}")
