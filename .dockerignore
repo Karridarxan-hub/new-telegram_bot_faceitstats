@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+*.tmp
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Documentation
+*.md
+docs/
+
+# Logs
+logs/
+*.log
+
+# Data files (будут монтироваться как volumes)
+bot_data.json
+bot_data_backup_*.json
+
+# Environment files
+.env
+.env.*
+!.env.docker
+
+# Test files
+test_*.py
+tests/
+
+# Backup files
+*.bak
+*.backup
+
+# Temporary files
+temp/
+tmp/

@@ -6,7 +6,8 @@ from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 
 from config.settings import settings
-from .handlers import router
+from .handlers import router, init_payment_manager
+from admin.queue_management import admin_queue_router
 from faceit.api import FaceitAPI
 from utils.storage import storage
 from utils.formatter import MessageFormatter
@@ -20,7 +21,7 @@ class FaceitTelegramBot:
     def __init__(self):
         # Initialize bot with default properties
         default_properties = DefaultBotProperties(
-            parse_mode=ParseMode.MARKDOWN_V2
+            parse_mode=ParseMode.HTML
         )
         
         self.bot = Bot(
@@ -32,6 +33,12 @@ class FaceitTelegramBot:
         
         # Include handlers
         self.dp.include_router(router)
+        
+        # Include admin queue management router
+        self.dp.include_router(admin_queue_router)
+        
+        # Initialize payment manager
+        init_payment_manager(self.bot)
         
         logger.info("Bot initialized successfully")
     
@@ -45,7 +52,7 @@ class FaceitTelegramBot:
             
             # Get match details
             match = await self.faceit_api.get_match_details(match_id)
-            if not match or match.status != "FINISHED":
+            if not match or match.status.upper() != "FINISHED":
                 logger.info(f"Match {match_id} not finished yet")
                 return
             
@@ -58,12 +65,12 @@ class FaceitTelegramBot:
             )
             
             # Send notification
-            notification_text = f"🔔 **Новый завершенный матч\\!**\\n\\n{formatted_message}"
+            notification_text = f"🔔 <b>Новый завершенный матч!</b>\n\n{formatted_message}"
             
             await self.bot.send_message(
                 chat_id=user_id,
                 text=notification_text,
-                parse_mode=ParseMode.MARKDOWN_V2
+                parse_mode=ParseMode.HTML
             )
             
             # Update last checked match

@@ -84,7 +84,7 @@ class MatchMonitor:
                     
                     # Send notifications for new finished matches
                     for match in new_matches:
-                        if match.status == "FINISHED":
+                        if match.status.upper() == "FINISHED":
                             logger.info(
                                 f"📬 Sending notification for match {match.match_id} "
                                 f"to user {user.user_id}"

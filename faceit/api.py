@@ -1,6 +1,7 @@
 """FACEIT API client."""
 
 import logging
+import asyncio
 from typing import List, Optional, Dict, Any
 import aiohttp
 from aiohttp import ClientTimeout
@@ -184,14 +185,92 @@ class FaceitAPI:
         
         if not last_checked_match_id:
             # Return finished matches if no last checked match
-            return [match for match in matches if match.status == "FINISHED"]
+            return [match for match in matches if match.status.upper() == "FINISHED"]
         
         new_matches = []
         for match in matches:
             if match.match_id == last_checked_match_id:
                 break
-            if match.status == "FINISHED":
+            if match.status.upper() == "FINISHED":
                 new_matches.append(match)
         
         logger.info(f"Found {len(new_matches)} new matches for player {player_id}")
         return new_matches
+
+    async def get_matches_with_stats(
+        self,
+        player_id: str,
+        limit: int = 20,
+        game: str = "cs2"
+    ) -> List[tuple]:
+        """Get player matches with detailed statistics."""
+        logger.info(f"Getting matches with stats for player {player_id} (limit: {limit})")
+        
+        # First get the matches
+        matches = await self.get_player_matches(player_id, limit, game=game)
+        
+        # Then get stats for each match
+        matches_with_stats = []
+        for match in matches:
+            if match.status.upper() == "FINISHED":
+                stats = await self.get_match_stats(match.match_id)
+                matches_with_stats.append((match, stats))
+            else:
+                matches_with_stats.append((match, None))
+        
+        return matches_with_stats
+    
+    async def get_multiple_players(self, player_ids: List[str]) -> List[Optional[FaceitPlayer]]:
+        """Получить информацию о нескольких игроках параллельно."""
+        logger.info(f"Getting multiple players: {len(player_ids)} players")
+        
+        # Создаём задачи для параллельного выполнения
+        tasks = [self.get_player_by_id(player_id) for player_id in player_ids]
+        
+        # Выполняем с ограничением по concurrency чтобы не перегрузить API
+        semaphore = asyncio.Semaphore(5)  # Максимум 5 одновременных запросов
+        
+        async def limited_task(task):
+            async with semaphore:
+                return await task
+        
+        # Выполняем все задачи с ограничениями
+        results = await asyncio.gather(*[limited_task(task) for task in tasks], return_exceptions=True)
+        
+        # Обрабатываем результаты
+        players = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.warning(f"Error getting player {player_ids[i]}: {result}")
+                players.append(None)
+            else:
+                players.append(result)
+        
+        return players
+    
+    async def get_multiple_player_stats(self, player_ids: List[str], game: str = "cs2") -> List[Optional[Dict[str, Any]]]:
+        """Получить статистику нескольких игроков параллельно."""
+        logger.info(f"Getting stats for {len(player_ids)} players")
+        
+        # Создаём задачи для параллельного выполнения
+        tasks = [self.get_player_stats(player_id, game) for player_id in player_ids]
+        
+        # Выполняем с ограничением
+        semaphore = asyncio.Semaphore(5)
+        
+        async def limited_task(task):
+            async with semaphore:
+                return await task
+        
+        results = await asyncio.gather(*[limited_task(task) for task in tasks], return_exceptions=True)
+        
+        # Обрабатываем результаты
+        stats_list = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.warning(f"Error getting stats for player {player_ids[i]}: {result}")
+                stats_list.append(None)
+            else:
+                stats_list.append(result)
+        
+        return stats_list

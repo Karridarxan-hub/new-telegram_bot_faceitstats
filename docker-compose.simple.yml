@@ -1,0 +1,79 @@
+version: '3.8'
+
+services:
+  # Main Telegram Bot
+  faceit-bot:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${VERSION:-1.0.0}
+    image: faceit-bot:${VERSION:-1.0.0}
+    container_name: faceit-bot-simple
+    restart: unless-stopped
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - FACEIT_API_KEY=${FACEIT_API_KEY}
+      - LOG_LEVEL=INFO
+      - ENVIRONMENT=docker
+    command: python simple_bot.py
+    volumes:
+      - ./data:/home/app/data
+      - ./logs:/home/app/logs
+    networks:
+      - faceit-network
+
+  # Redis for Caching (optional, but good to have)
+  redis:
+    image: redis:7-alpine
+    container_name: faceit-redis-simple
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - faceit-network
+    command: redis-server --requirepass faceit_redis_2024
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "faceit_redis_2024", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # PostgreSQL Database (optional for testing)
+  postgres:
+    image: postgres:15-alpine
+    container_name: faceit-postgres-simple
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: faceit_bot
+      POSTGRES_USER: faceit_user
+      POSTGRES_PASSWORD: faceit_password
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - faceit-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U faceit_user -d faceit_bot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+networks:
+  faceit-network:
+    driver: bridge
+
+volumes:
+  redis_data:
+    driver: local
+  postgres_data:
+    driver: local

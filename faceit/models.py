@@ -34,10 +34,10 @@ class FaceitTeamPlayer(BaseModel):
 
 class FaceitTeam(BaseModel):
     """FACEIT team information."""
-    team_id: str
-    nickname: str
-    avatar: str
-    type: str
+    team_id: Optional[str] = Field(None, alias="faction_id")
+    nickname: Optional[str] = None
+    avatar: Optional[str] = None
+    type: Optional[str] = None
     players: List[FaceitTeamPlayer] = Field(default_factory=list)
 
 
@@ -72,25 +72,25 @@ class PlayerMatchHistory(BaseModel):
 class FaceitMatch(BaseModel):
     """Detailed match information."""
     match_id: str
-    version: int
-    game: str
-    region: str
-    competition_id: str
-    competition_name: str
-    competition_type: str
-    organizer_id: str
-    teams: Dict[str, FaceitTeam]
-    playing_players: List[str]
-    competition: str
-    configured_at: int
-    started_at: int
-    finished_at: int
+    version: Optional[int] = None
+    game: Optional[str] = None
+    region: Optional[str] = None
+    competition_id: Optional[str] = None
+    competition_name: Optional[str] = None
+    competition_type: Optional[str] = None
+    organizer_id: Optional[str] = None
+    teams: Optional[Dict[str, FaceitTeam]] = Field(default_factory=dict)
+    playing_players: Optional[List[str]] = Field(default_factory=list)
+    competition: Optional[str] = None
+    configured_at: Optional[int] = None
+    started_at: Optional[int] = None
+    finished_at: Optional[int] = None
     demo_url: Optional[List[str]] = None
-    chat_room_id: str
-    best_of: int
-    results: MatchResults
-    status: str
-    faceit_url: str
+    chat_room_id: Optional[str] = None
+    best_of: Optional[int] = None
+    results: Optional[MatchResults] = None
+    status: Optional[str] = None
+    faceit_url: Optional[str] = None
 
 
 class PlayerStats(BaseModel):
@@ -119,7 +119,7 @@ class RoundStats(BaseModel):
 class MatchRound(BaseModel):
     """Match round information."""
     best_of: str
-    competition_id: str
+    competition_id: Optional[str] = None
     game_id: str
     game_mode: str
     match_id: str
