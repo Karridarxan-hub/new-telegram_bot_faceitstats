@@ -62,6 +62,22 @@ python manage_queues.py          # Queue management utilities
 python simple_worker.py          # Simple worker for testing
 ```
 
+### Monitoring Operations
+```bash
+# Start monitoring dashboard (Enterprise version)
+cd monitoring && python monitoring.py    # Start monitoring on port 9181
+cd monitoring && ./build-and-run.sh      # Docker monitoring setup
+
+# Access monitoring dashboard
+# Local: http://localhost:9181
+# Production: http://185.224.132.36:9181
+
+# Monitoring API endpoints
+curl http://localhost:9181/api/health     # Health check
+curl http://localhost:9181/api/metrics    # System metrics JSON
+curl http://localhost:9181/api/errors     # Recent errors
+```
+
 ### Testing
 ```bash
 python test_match_analysis.py   # Test match analysis functionality
@@ -69,6 +85,7 @@ python test_integration.py      # Integration tests
 python test_subscription_comprehensive.py  # Subscription system tests
 python test_error_handling.py   # Error handling tests
 python test_statistics_functionality.py    # Statistics tests
+python test_supabase_connectivity.py       # Database connectivity tests
 ```
 
 ### Deployment and Release
@@ -235,22 +252,41 @@ Commands support both subscription-gated and free functionality:
 
 ### Monitoring and Observability
 
+**Monitoring Dashboard** (Enterprise):
+- Custom Flask-based monitoring system on port 9181
+- Replaces RQ Dashboard (resolved Upstash Redis DB limitation)
+- Real-time metrics with 5-second auto-refresh
+- Bootstrap 5 + Chart.js responsive interface
+- Available at: http://localhost:9181 (dev) or http://185.224.132.36:9181 (prod)
+
+**Dashboard Features**:
+- Service status for all 5 containers (bot + 3 workers + monitoring)
+- User analytics: total users, active today, top users by requests
+- Request graphs: hourly distribution over 24h, command type distribution
+- Queue statistics: high/default/low priority queues, failed jobs
+- Worker monitoring: active/idle status for all workers
+- PostgreSQL stats: database size, connections, user counts
+- Redis metrics: memory usage, connected clients, queue lengths
+
 **Logging**:
 - Structured logging with levels (DEBUG, INFO, WARNING, ERROR)
 - File output to `bot.log`, `worker.log`
 - Rotation and retention policies
 
-**Metrics** (Enterprise):
+**Metrics Collection** (Enterprise):
 - Queue length and processing times
-- API request counts and latencies
+- API request counts and latencies  
 - Cache hit rates
 - Subscription conversion rates
+- Hourly request patterns
+- Command usage statistics
 
 **Health Checks**:
 - Database connectivity
 - Redis availability
 - FACEIT API status
 - Worker process monitoring
+- Docker container health checks
 
 ## Important Notes
 

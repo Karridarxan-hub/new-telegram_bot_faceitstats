@@ -90,6 +90,18 @@ python main.py
 python main.py | tee bot.log
 ```
 
+### Запуск системы мониторинга:
+```bash
+# Enterprise версия - мониторинг на порту 9181
+cd monitoring && python monitoring.py
+
+# Или через Docker
+docker-compose up -d monitoring
+
+# Доступ к дашборду:
+# http://localhost:9181
+```
+
 ## Команды бота
 
 - `/start` - приветствие и инструкция по использованию
@@ -119,6 +131,12 @@ faceit-telegram-bot/
 │   ├── formatter.py        # Форматирование сообщений
 │   ├── monitor.py          # Мониторинг новых матчей
 │   └── storage.py          # Локальное хранилище
+├── monitoring/             # Система мониторинга (Enterprise)
+│   ├── monitoring.py       # Flask сервер мониторинга
+│   ├── Dockerfile          # Docker образ для мониторинга
+│   ├── requirements-monitoring.txt
+│   └── templates/
+│       └── dashboard.html  # Веб-дашборд с графиками
 ├── main.py                 # Точка входа приложения
 ├── requirements.txt        # Python зависимости
 ├── .env.example           # Пример переменных окружения
@@ -230,6 +248,28 @@ WantedBy=multi-user.target
 - **Async/await** паттерн для всех I/O операций
 
 ## Мониторинг и отладка
+
+### Веб-дашборд мониторинга (Enterprise):
+```bash
+# Запуск дашборда
+cd monitoring && python monitoring.py
+
+# Доступ к интерфейсу:
+# http://localhost:9181
+
+# API endpoints:
+curl http://localhost:9181/api/health   # Проверка состояния
+curl http://localhost:9181/api/metrics  # Метрики системы
+curl http://localhost:9181/api/errors   # Последние ошибки
+```
+
+**Возможности дашборда:**
+- Статус всех сервисов (bot + 3 workers + мониторинг)
+- Аналитика пользователей: общее количество, активные сегодня
+- Графики запросов: распределение по часам, типы команд
+- Статистика очередей: high/default/low приоритеты
+- Мониторинг воркеров: активные/простаивающие
+- Информация о базах данных: PostgreSQL и Redis
 
 ### Проверка статуса:
 ```python
