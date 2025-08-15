@@ -283,6 +283,35 @@ await storage.get_all_users()  # Список всех пользователе�
 tail -f bot.log  # Мониторинг в реальном времени
 ```
 
+## Troubleshooting
+
+### PostgreSQL Connection Issues
+
+**Проблема**: "prepared statement already exists"
+```
+ERROR: prepared statement "__asyncpg_stmt_1__" already exists
+```
+
+**Решение**: Добавить `?statement_cache_size=0` к DATABASE_URL:
+```bash
+# Неправильно
+DATABASE_URL=postgresql+asyncpg://user:pass@host:port/database
+
+# Правильно  
+DATABASE_URL=postgresql+asyncpg://user:pass@host:port/database?statement_cache_size=0
+```
+
+**Причина**: Supabase использует pgbouncer в transaction mode, который не поддерживает prepared statements.
+
+### Docker Environment Variables
+
+**Проблема**: Предупреждения о неопределенных переменных
+```
+WARNING: The "REDIS_URL" variable is not set
+```
+
+**Решение**: Убедитесь что переменные определены в `.env.docker` и не используются `${VARIABLE}` в docker-compose.yml для неопределенных значений.
+
 ## Лицензия
 
 MIT License - используйте свободно в личных и коммерческих проектах.

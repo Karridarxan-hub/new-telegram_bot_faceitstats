@@ -290,6 +290,19 @@ Commands support both subscription-gated and free functionality:
 
 ## Important Notes
 
+### Database Connection Issues
+
+**PostgreSQL + pgbouncer (Supabase):**
+- Supabase uses pgbouncer in transaction mode
+- Issue: "prepared statement already exists" error
+- **Solution**: Add `?statement_cache_size=0` to DATABASE_URL
+- Example: `postgresql+asyncpg://user:pass@host:port/db?statement_cache_size=0`
+
+**Docker Environment Variables:**
+- Use `env_file` directive for bulk environment loading
+- Avoid `${VARIABLE}` syntax for undefined variables in docker-compose
+- Monitoring service reads all variables from `.env.docker`
+
 ### API Integration
 - FACEIT API rate limit: 500 requests/10 minutes
 - Use `CachedFaceitAPI` wrapper for optimization
