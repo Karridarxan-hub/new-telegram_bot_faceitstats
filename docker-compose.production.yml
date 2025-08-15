@@ -1,0 +1,421 @@
+version: '3.8'
+
+# Production Docker Compose for FACEIT Bot with Supabase PostgreSQL
+# Optimized for VPS deployment with enhanced network configuration
+# and Supabase connectivity fixes
+
+services:
+  # Main Telegram Bot
+  faceit-bot:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${VERSION:-1.0.0}
+    image: faceit-bot:production
+    container_name: faceit-bot-prod
+    restart: unless-stopped
+    
+    # Network configuration for Supabase connectivity
+    dns:
+      - 8.8.8.8      # Google DNS (primary)
+      - 1.1.1.1      # Cloudflare DNS (secondary)
+      - 208.67.222.222  # OpenDNS (tertiary)
+    
+    # Add static host entries for Supabase (helps with DNS resolution)
+    extra_hosts:
+      - "aws-0-us-east-1.pooler.supabase.com:3.208.131.123"  # Update this IP if needed
+    
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      
+      # Database Configuration (Supabase)
+      - DATABASE_URL=postgresql+asyncpg://postgres.emzlxdutmhmbvaetphpu:b6Sfj*D!Gr98vPY@aws-0-us-east-1.pooler.supabase.com:6543/postgres
+      
+      # Database Connection Pool Settings
+      - DB_POOL_SIZE=15
+      - DB_POOL_OVERFLOW=25
+      - DB_POOL_TIMEOUT=30
+      - DB_MAX_RETRIES=5
+      - DB_CONNECTION_TIMEOUT=15
+      - DB_COMMAND_TIMEOUT=60
+      - DB_ENABLE_MONITORING=true
+      
+      # Failover Configuration
+      - DB_FAILOVER_ENABLED=true
+      - DB_FAILOVER_RETRY_DELAY=5.0
+      - DB_HEALTH_CHECK_INTERVAL=60
+      
+      # Application Settings
+      - LOG_LEVEL=INFO
+      - ENVIRONMENT=production
+      
+      # Network timeouts (important for Supabase)
+      - NETWORK_TIMEOUT=30
+      - DNS_TIMEOUT=10
+      
+    env_file:
+      - .env.production
+    
+    command: python main.py
+    
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - /etc/localtime:/etc/localtime:ro  # Sync timezone
+    
+    networks:
+      - faceit-network
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import asyncio; import sys; sys.path.append('/app'); from production_database_config import test_production_database; asyncio.run(test_production_database())"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 120s
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+          cpus: '0.7'
+        reservations:
+          memory: 384M
+          cpus: '0.3'
+    
+    # Security settings
+    security_opt:
+      - no-new-privileges:true
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # RQ Worker - Priority Tasks
+  worker-priority:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${VERSION:-1.0.0}
+    image: faceit-bot:production
+    container_name: faceit-worker-priority-prod
+    restart: unless-stopped
+    
+    # Same DNS configuration as main bot
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+      - 208.67.222.222
+    
+    extra_hosts:
+      - "aws-0-us-east-1.pooler.supabase.com:3.208.131.123"
+    
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      - WORKER_TYPE=priority
+      - WORKER_NAME=priority-worker-prod-1
+      
+      # Database Configuration (same as main bot)
+      - DATABASE_URL=postgresql+asyncpg://postgres.emzlxdutmhmbvaetphpu:b6Sfj*D!Gr98vPY@aws-0-us-east-1.pooler.supabase.com:6543/postgres
+      
+      # Optimized pool settings for workers
+      - DB_POOL_SIZE=8
+      - DB_POOL_OVERFLOW=12
+      - DB_POOL_TIMEOUT=30
+      - DB_MAX_RETRIES=5
+      - DB_CONNECTION_TIMEOUT=15
+      
+      - LOG_LEVEL=INFO
+      - ENVIRONMENT=production
+    
+    env_file:
+      - .env.production
+    
+    command: python worker.py
+    
+    volumes:
+      - ./logs:/app/logs
+      - /etc/localtime:/etc/localtime:ro
+    
+    networks:
+      - faceit-network
+    
+    # Health check for worker
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; print('Worker health check passed')"]
+      interval: 120s
+      timeout: 30s
+      retries: 2
+      start_period: 60s
+    
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.6'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    
+    security_opt:
+      - no-new-privileges:true
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # RQ Worker - Default Tasks
+  worker-default:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${VERSION:-1.0.0}
+    image: faceit-bot:production
+    container_name: faceit-worker-default-prod
+    restart: unless-stopped
+    
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+      - 208.67.222.222
+    
+    extra_hosts:
+      - "aws-0-us-east-1.pooler.supabase.com:3.208.131.123"
+    
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      - WORKER_TYPE=default
+      - WORKER_NAME=default-worker-prod-1
+      
+      - DATABASE_URL=postgresql+asyncpg://postgres.emzlxdutmhmbvaetphpu:b6Sfj*D!Gr98vPY@aws-0-us-east-1.pooler.supabase.com:6543/postgres
+      - DB_POOL_SIZE=6
+      - DB_POOL_OVERFLOW=10
+      - DB_POOL_TIMEOUT=30
+      - DB_MAX_RETRIES=5
+      
+      - LOG_LEVEL=INFO
+      - ENVIRONMENT=production
+    
+    env_file:
+      - .env.production
+    
+    command: python worker.py
+    
+    volumes:
+      - ./logs:/app/logs
+      - /etc/localtime:/etc/localtime:ro
+    
+    networks:
+      - faceit-network
+    
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; print('Worker health check passed')"]
+      interval: 120s
+      timeout: 30s
+      retries: 2
+      start_period: 60s
+    
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+          cpus: '0.4'
+        reservations:
+          memory: 192M
+          cpus: '0.2'
+    
+    security_opt:
+      - no-new-privileges:true
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # RQ Worker - Bulk Processing
+  worker-bulk:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${VERSION:-1.0.0}
+    image: faceit-bot:production
+    container_name: faceit-worker-bulk-prod
+    restart: unless-stopped
+    
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+      - 208.67.222.222
+    
+    extra_hosts:
+      - "aws-0-us-east-1.pooler.supabase.com:3.208.131.123"
+    
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      - WORKER_TYPE=bulk
+      - WORKER_NAME=bulk-worker-prod-1
+      
+      - DATABASE_URL=postgresql+asyncpg://postgres.emzlxdutmhmbvaetphpu:b6Sfj*D!Gr98vPY@aws-0-us-east-1.pooler.supabase.com:6543/postgres
+      - DB_POOL_SIZE=4
+      - DB_POOL_OVERFLOW=8
+      - DB_POOL_TIMEOUT=30
+      - DB_MAX_RETRIES=5
+      
+      - LOG_LEVEL=INFO
+      - ENVIRONMENT=production
+    
+    env_file:
+      - .env.production
+    
+    command: python worker.py
+    
+    volumes:
+      - ./logs:/app/logs
+      - /etc/localtime:/etc/localtime:ro
+    
+    networks:
+      - faceit-network
+    
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; print('Worker health check passed')"]
+      interval: 120s
+      timeout: 30s
+      retries: 2
+      start_period: 60s
+    
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.3'
+        reservations:
+          memory: 128M
+          cpus: '0.15'
+    
+    security_opt:
+      - no-new-privileges:true
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # RQ Dashboard for monitoring
+  rq-dashboard:
+    image: eoranged/rq-dashboard:latest
+    container_name: faceit-rq-dashboard-prod
+    restart: unless-stopped
+    
+    ports:
+      - "9181:9181"
+    
+    environment:
+      - RQ_DASHBOARD_REDIS_URL=${QUEUE_REDIS_URL}
+    
+    env_file:
+      - .env.production
+    
+    networks:
+      - faceit-network
+    
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.1'
+    
+    security_opt:
+      - no-new-privileges:true
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  # Database connectivity monitor (runs connectivity tests)
+  db-monitor:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    image: faceit-bot:production
+    container_name: faceit-db-monitor-prod
+    restart: unless-stopped
+    
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+      - 208.67.222.222
+    
+    extra_hosts:
+      - "aws-0-us-east-1.pooler.supabase.com:3.208.131.123"
+    
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DATABASE_URL=postgresql+asyncpg://postgres.emzlxdutmhmbvaetphpu:b6Sfj*D!Gr98vPY@aws-0-us-east-1.pooler.supabase.com:6543/postgres
+      - MONITOR_INTERVAL=300  # 5 minutes
+      - LOG_LEVEL=INFO
+    
+    command: sh -c "while true; do python test_supabase_connectivity.py; sleep $${MONITOR_INTERVAL}; done"
+    
+    volumes:
+      - ./logs:/app/logs
+      - /etc/localtime:/etc/localtime:ro
+    
+    networks:
+      - faceit-network
+    
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.1'
+        reservations:
+          memory: 64M
+          cpus: '0.05'
+    
+    security_opt:
+      - no-new-privileges:true
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+networks:
+  faceit-network:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: faceit-prod-br
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+          gateway: 172.20.0.1
+    # DNS configuration for the entire network
+    dns: 
+      - 8.8.8.8
+      - 1.1.1.1
+
+# Named volumes for persistence
+volumes:
+  app-data:
+    driver: local
+  app-logs:
+    driver: local

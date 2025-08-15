@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FACEIT Bot Monitoring Dashboard</title>
+    
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <style>
+        body {
+            background-color: #f5f5f5;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        
+        .navbar {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        .status-card {
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+            transition: transform 0.3s;
+            height: 100%;
+        }
+        
+        .status-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
+        }
+        
+        .status-healthy {
+            border-left: 5px solid #28a745;
+        }
+        
+        .status-error {
+            border-left: 5px solid #dc3545;
+        }
+        
+        .status-warning {
+            border-left: 5px solid #ffc107;
+        }
+        
+        .metric-number {
+            font-size: 2.5rem;
+            font-weight: bold;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        
+        .chart-container {
+            position: relative;
+            height: 300px;
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+        }
+        
+        .queue-badge {
+            font-size: 1.2rem;
+            padding: 10px 20px;
+            border-radius: 20px;
+        }
+        
+        .worker-status {
+            padding: 10px;
+            border-radius: 5px;
+            margin: 5px 0;
+        }
+        
+        .worker-active {
+            background-color: #d4edda;
+            border-left: 3px solid #28a745;
+        }
+        
+        .worker-idle {
+            background-color: #fff3cd;
+            border-left: 3px solid #ffc107;
+        }
+        
+        .pulse {
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+        
+        .live-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            background-color: #28a745;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+            margin-right: 5px;
+        }
+    </style>
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar navbar-dark">
+        <div class="container-fluid">
+            <span class="navbar-brand mb-0 h1">
+                <i class="fas fa-chart-line"></i> FACEIT Bot Monitoring
+                <span class="live-indicator"></span>
+                <small class="text-white-50">Real-time Dashboard</small>
+            </span>
+            <span class="text-white">
+                <i class="fas fa-clock"></i> 
+                <span id="current-time"></span>
+            </span>
+        </div>
+    </nav>
+
+    <div class="container-fluid mt-4">
+        <!-- Service Status Row -->
+        <div class="row mb-4">
+            <div class="col-md-2">
+                <div class="card status-card" id="bot-status">
+                    <div class="card-body text-center">
+                        <i class="fas fa-robot fa-2x mb-2"></i>
+                        <h6>Bot</h6>
+                        <span class="badge bg-success">Healthy</span>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-2">
+                <div class="card status-card" id="worker-priority-status">
+                    <div class="card-body text-center">
+                        <i class="fas fa-exclamation-circle fa-2x mb-2"></i>
+                        <h6>Priority Worker</h6>
+                        <span class="badge bg-success">Active</span>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-2">
+                <div class="card status-card" id="worker-default-status">
+                    <div class="card-body text-center">
+                        <i class="fas fa-tasks fa-2x mb-2"></i>
+                        <h6>Default Worker</h6>
+                        <span class="badge bg-success">Active</span>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-2">
+                <div class="card status-card" id="worker-bulk-status">
+                    <div class="card-body text-center">
+                        <i class="fas fa-layer-group fa-2x mb-2"></i>
+                        <h6>Bulk Worker</h6>
+                        <span class="badge bg-success">Active</span>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-2">
+                <div class="card status-card" id="postgres-status">
+                    <div class="card-body text-center">
+                        <i class="fas fa-database fa-2x mb-2"></i>
+                        <h6>PostgreSQL</h6>
+                        <span class="badge bg-success">Connected</span>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-2">
+                <div class="card status-card" id="redis-status">
+                    <div class="card-body text-center">
+                        <i class="fas fa-memory fa-2x mb-2"></i>
+                        <h6>Redis</h6>
+                        <span class="badge bg-success">Connected</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Metrics Row -->
+        <div class="row mb-4">
+            <div class="col-md-3">
+                <div class="card status-card">
+                    <div class="card-body">
+                        <h6 class="text-muted">Total Users</h6>
+                        <div class="metric-number" id="total-users">0</div>
+                        <small class="text-muted">
+                            <i class="fas fa-user-plus"></i> 
+                            <span id="new-users-today">0</span> new today
+                        </small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card status-card">
+                    <div class="card-body">
+                        <h6 class="text-muted">Active Today</h6>
+                        <div class="metric-number" id="active-users">0</div>
+                        <small class="text-muted">
+                            <i class="fas fa-chart-line"></i> 
+                            Last 24 hours
+                        </small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card status-card">
+                    <div class="card-body">
+                        <h6 class="text-muted">Total Requests</h6>
+                        <div class="metric-number" id="total-requests">0</div>
+                        <small class="text-muted">
+                            <i class="fas fa-clock"></i> 
+                            <span id="avg-response">0</span>ms avg
+                        </small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card status-card">
+                    <div class="card-body">
+                        <h6 class="text-muted">Queue Size</h6>
+                        <div class="metric-number" id="queue-total">0</div>
+                        <small class="text-muted">
+                            <i class="fas fa-check-circle text-success"></i> 
+                            <span id="processed-today">0</span> processed
+                        </small>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Charts Row -->
+        <div class="row mb-4">
+            <div class="col-md-8">
+                <div class="chart-container">
+                    <h5>Requests per Hour (Last 24h)</h5>
+                    <canvas id="hourlyChart"></canvas>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="chart-container">
+                    <h5>Command Distribution</h5>
+                    <canvas id="commandChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Queue and Workers Row -->
+        <div class="row mb-4">
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h5><i class="fas fa-list"></i> Queue Status</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row text-center">
+                            <div class="col-md-4">
+                                <h6>High Priority</h6>
+                                <span class="badge queue-badge bg-danger" id="queue-high">0</span>
+                            </div>
+                            <div class="col-md-4">
+                                <h6>Default</h6>
+                                <span class="badge queue-badge bg-primary" id="queue-default">0</span>
+                            </div>
+                            <div class="col-md-4">
+                                <h6>Low Priority</h6>
+                                <span class="badge queue-badge bg-secondary" id="queue-low">0</span>
+                            </div>
+                        </div>
+                        <hr>
+                        <div class="text-center">
+                            <h6>Failed Jobs</h6>
+                            <span class="badge queue-badge bg-warning text-dark" id="queue-failed">0</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h5><i class="fas fa-users"></i> Top Active Users</h5>
+                    </div>
+                    <div class="card-body">
+                        <div id="top-users-list">
+                            <p class="text-muted">Loading user data...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- System Info Row -->
+        <div class="row">
+            <div class="col-md-12">
+                <div class="card">
+                    <div class="card-header">
+                        <h5><i class="fas fa-info-circle"></i> System Information</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-4">
+                                <strong>PostgreSQL:</strong> 
+                                <span id="postgres-info">Checking...</span>
+                            </div>
+                            <div class="col-md-4">
+                                <strong>Redis:</strong> 
+                                <span id="redis-info">Checking...</span>
+                            </div>
+                            <div class="col-md-4">
+                                <strong>Last Update:</strong> 
+                                <span id="last-update">Never</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    
+    <script>
+        // Global variables for charts
+        let hourlyChart, commandChart;
+        
+        // Initialize charts
+        function initCharts() {
+            // Hourly requests chart
+            const hourlyCtx = document.getElementById('hourlyChart').getContext('2d');
+            hourlyChart = new Chart(hourlyCtx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'Requests',
+                        data: [],
+                        borderColor: 'rgb(75, 192, 192)',
+                        backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                        tension: 0.1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true
+                        }
+                    }
+                }
+            });
+            
+            // Command distribution chart
+            const commandCtx = document.getElementById('commandChart').getContext('2d');
+            commandChart = new Chart(commandCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        data: [],
+                        backgroundColor: [
+                            '#FF6384',
+                            '#36A2EB',
+                            '#FFCE56',
+                            '#4BC0C0',
+                            '#9966FF',
+                            '#FF9F40'
+                        ]
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false
+                }
+            });
+        }
+        
+        // Update dashboard data
+        async function updateDashboard() {
+            try {
+                const response = await fetch('/api/metrics');
+                const data = await response.json();
+                
+                // Update service status
+                updateServiceStatus(data.service_status);
+                
+                // Update user metrics
+                document.getElementById('total-users').textContent = 
+                    data.user_stats.total || '0';
+                document.getElementById('active-users').textContent = 
+                    data.user_stats.active_today || '0';
+                
+                // Update request metrics
+                const totalRequests = data.hourly_requests.reduce((sum, h) => sum + h.count, 0);
+                document.getElementById('total-requests').textContent = totalRequests;
+                document.getElementById('avg-response').textContent = 
+                    data.performance.avg_response_time || '0';
+                
+                // Update queue metrics
+                const queues = data.queue_stats || {};
+                document.getElementById('queue-high').textContent = queues.high || '0';
+                document.getElementById('queue-default').textContent = queues.default || '0';
+                document.getElementById('queue-low').textContent = queues.low || '0';
+                document.getElementById('queue-failed').textContent = queues.failed || '0';
+                
+                const queueTotal = (queues.high || 0) + (queues.default || 0) + (queues.low || 0);
+                document.getElementById('queue-total').textContent = queueTotal;
+                
+                // Update hourly chart
+                if (hourlyChart && data.hourly_requests) {
+                    hourlyChart.data.labels = data.hourly_requests.map(h => h.hour);
+                    hourlyChart.data.datasets[0].data = data.hourly_requests.map(h => h.count);
+                    hourlyChart.update();
+                }
+                
+                // Update command chart
+                if (commandChart && data.command_stats) {
+                    const commands = Object.entries(data.command_stats).sort((a, b) => b[1] - a[1]);
+                    commandChart.data.labels = commands.map(c => c[0]);
+                    commandChart.data.datasets[0].data = commands.map(c => c[1]);
+                    commandChart.update();
+                }
+                
+                // Update top users
+                updateTopUsers(data.user_stats.top_users || []);
+                
+                // Update last update time
+                document.getElementById('last-update').textContent = 
+                    new Date(data.last_updated).toLocaleTimeString();
+                
+            } catch (error) {
+                console.error('Error updating dashboard:', error);
+            }
+        }
+        
+        // Update service status cards
+        function updateServiceStatus(status) {
+            if (!status) return;
+            
+            // PostgreSQL status
+            if (status.postgresql) {
+                const pgCard = document.getElementById('postgres-status');
+                const pgStatus = status.postgresql.status === 'healthy' ? 'Connected' : 'Error';
+                const pgClass = status.postgresql.status === 'healthy' ? 'bg-success' : 'bg-danger';
+                pgCard.querySelector('.badge').className = `badge ${pgClass}`;
+                pgCard.querySelector('.badge').textContent = pgStatus;
+                
+                if (status.postgresql.database_size) {
+                    document.getElementById('postgres-info').textContent = 
+                        `Size: ${status.postgresql.database_size}, Connections: ${status.postgresql.connections}`;
+                }
+            }
+            
+            // Redis status
+            if (status.redis) {
+                const redisCard = document.getElementById('redis-status');
+                const redisStatus = status.redis.status === 'healthy' ? 'Connected' : 'Error';
+                const redisClass = status.redis.status === 'healthy' ? 'bg-success' : 'bg-danger';
+                redisCard.querySelector('.badge').className = `badge ${redisClass}`;
+                redisCard.querySelector('.badge').textContent = redisStatus;
+                
+                if (status.redis.memory_used) {
+                    document.getElementById('redis-info').textContent = 
+                        `Memory: ${status.redis.memory_used}, Clients: ${status.redis.connected_clients}`;
+                }
+                
+                // Update worker status
+                if (status.redis.workers) {
+                    updateWorkerStatus(status.redis.workers);
+                }
+            }
+        }
+        
+        // Update worker status
+        function updateWorkerStatus(workers) {
+            workers.forEach(worker => {
+                let cardId = '';
+                if (worker.name.includes('priority')) cardId = 'worker-priority-status';
+                else if (worker.name.includes('default')) cardId = 'worker-default-status';
+                else if (worker.name.includes('bulk')) cardId = 'worker-bulk-status';
+                
+                if (cardId) {
+                    const card = document.getElementById(cardId);
+                    if (card) {
+                        const badge = card.querySelector('.badge');
+                        const isActive = worker.state === 'busy' || worker.state === 'idle';
+                        badge.className = `badge ${isActive ? 'bg-success' : 'bg-warning'}`;
+                        badge.textContent = isActive ? 'Active' : 'Inactive';
+                    }
+                }
+            });
+        }
+        
+        // Update top users list
+        function updateTopUsers(users) {
+            const container = document.getElementById('top-users-list');
+            if (users.length === 0) {
+                container.innerHTML = '<p class="text-muted">No active users</p>';
+                return;
+            }
+            
+            let html = '<ol>';
+            users.forEach(user => {
+                html += `<li>User ${user.user_id}: <strong>${user.requests}</strong> requests</li>`;
+            });
+            html += '</ol>';
+            container.innerHTML = html;
+        }
+        
+        // Update current time
+        function updateTime() {
+            document.getElementById('current-time').textContent = 
+                new Date().toLocaleTimeString();
+        }
+        
+        // Initialize dashboard
+        document.addEventListener('DOMContentLoaded', function() {
+            initCharts();
+            updateDashboard();
+            updateTime();
+            
+            // Auto-refresh every 5 seconds
+            setInterval(updateDashboard, 5000);
+            setInterval(updateTime, 1000);
+        });
+    </script>
+</body>
+</html>

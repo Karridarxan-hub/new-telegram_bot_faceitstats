@@ -43,6 +43,12 @@ coverage.xml
 .env.production
 .env.staging
 
+# SSH keys and certificates
+*.pem
+*.key
+*.ppk
+vps-key.*
+
 # Virtual environments
 .venv
 env/
@@ -65,3 +71,15 @@ Thumbs.db
 # Project specific
 data.json
 *.log
+
+# Temporary sync files
+*_prod.py
+*_prod.html
+*_prod.txt
+*_updated.*
+docker-compose-updated.yml
+*.backup
+*.bak
+
+# Monitoring integration notes
+monitoring-integration-notes.txt

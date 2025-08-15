@@ -1,0 +1,25 @@
+# Зависимости для FACEIT Telegram Bot Monitoring Service
+# Оптимизированный набор только необходимых пакетов
+
+# Flask веб-фреймворк с оптимальной версией
+Flask==2.3.3
+Flask-CORS==4.0.0
+
+# Redis клиент с бинарными расширениями для производительности
+redis==4.6.0
+hiredis==2.3.2
+
+# PostgreSQL асинхронный драйвер
+asyncpg==0.28.0
+
+# Асинхронный Redis клиент
+aioredis==2.0.1
+
+# Планировщик задач для метрик
+APScheduler==3.10.4
+
+# HTTP клиент для health checks
+requests==2.31.0
+
+# Опциональные зависимости для Docker integration
+docker==7.1.0

@@ -16,9 +16,6 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONDONTWRITEBYTECODE=1
-      - REDIS_URL=redis://redis:6379/0
-      - QUEUE_REDIS_URL=redis://redis:6379/1
-      - DATABASE_URL=postgresql+asyncpg://faceit_user:${POSTGRES_PASSWORD:-faceit_password}@postgres:5432/faceit_bot
     command: python main.py
     volumes:
       - ./data:/app/data
@@ -49,9 +46,6 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONDONTWRITEBYTECODE=1
-      - REDIS_URL=redis://redis:6379/0
-      - QUEUE_REDIS_URL=redis://redis:6379/1
-      - DATABASE_URL=postgresql+asyncpg://faceit_user:${POSTGRES_PASSWORD:-faceit_password}@postgres:5432/faceit_bot
       - WORKER_TYPE=priority
       - WORKER_NAME=priority-worker-1
     command: python worker.py
@@ -83,9 +77,6 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONDONTWRITEBYTECODE=1
-      - REDIS_URL=redis://redis:6379/0
-      - QUEUE_REDIS_URL=redis://redis:6379/1
-      - DATABASE_URL=postgresql+asyncpg://faceit_user:${POSTGRES_PASSWORD:-faceit_password}@postgres:5432/faceit_bot
       - WORKER_TYPE=default
       - WORKER_NAME=default-worker-1
     command: python worker.py
@@ -117,9 +108,6 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONDONTWRITEBYTECODE=1
-      - REDIS_URL=redis://redis:6379/0
-      - QUEUE_REDIS_URL=redis://redis:6379/1
-      - DATABASE_URL=postgresql+asyncpg://faceit_user:${POSTGRES_PASSWORD:-faceit_password}@postgres:5432/faceit_bot
       - WORKER_TYPE=bulk
       - WORKER_NAME=bulk-worker-1
     command: python worker.py
@@ -137,24 +125,48 @@ services:
           cpus: '0.15'
 
 
-  # RQ Dashboard (Optional - for monitoring)
-  rq-dashboard:
-    image: eoranged/rq-dashboard:latest
-    container_name: faceit-rq-dashboard
+  # Monitoring Service (replacement for RQ Dashboard)
+  monitoring:
+    build:
+      context: ./monitoring
+      dockerfile: Dockerfile
+    image: faceit-monitoring:latest
+    container_name: faceit-monitoring
     restart: unless-stopped
     ports:
       - "9181:9181"
     env_file:
       - .env.docker
     environment:
-      - RQ_DASHBOARD_REDIS_URL=${QUEUE_REDIS_URL}
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      - REDIS_URL=${REDIS_URL}
+      - DATABASE_URL=${DATABASE_URL}
+      - QUEUE_REDIS_URL=${QUEUE_REDIS_URL}
+      - MONITORING_PORT=9181
+      - FLASK_ENV=production
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    depends_on:
+      - faceit-bot
+      - worker-priority
+      - worker-default
+      - worker-bulk
     networks:
       - faceit-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:9181/api/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     deploy:
       resources:
         limits:
-          memory: 64M
-          cpus: '0.1'
+          memory: 256M
+          cpus: '0.3'
+        reservations:
+          memory: 128M
+          cpus: '0.15'
 
 networks:
   faceit-network:

@@ -1,0 +1,74 @@
+# Docker Compose для локального тестирования monitoring службы
+# Использует общие Redis и PostgreSQL из основного проекта
+version: '3.8'
+
+services:
+  monitoring:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: faceit-monitoring
+    ports:
+      - "9181:9181"
+    environment:
+      # Подключение к Redis (используем внешний или из основного docker-compose)
+      - REDIS_URL=redis://redis:6379/0
+      # Подключение к PostgreSQL (используем внешний или из основного docker-compose)
+      - DATABASE_URL=postgresql://user:password@postgres:5432/faceit_bot
+      - MONITORING_PORT=9181
+      - FLASK_ENV=production
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - faceit-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:9181/api/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    # Ограничения ресурсов для оптимизации
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+        reservations:
+          memory: 128M
+          cpus: '0.25'
+
+  # Для тестирования подключаем минимальные версии Redis и PostgreSQL
+  redis:
+    image: redis:7-alpine
+    container_name: faceit-redis-test
+    ports:
+      - "6379:6379"
+    networks:
+      - faceit-network
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: faceit-postgres-test
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=faceit_bot
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=password
+    networks:
+      - faceit-network
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+networks:
+  faceit-network:
+    driver: bridge
+
+volumes:
+  redis_data:
+  postgres_data:
