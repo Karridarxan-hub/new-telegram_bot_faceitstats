@@ -140,9 +140,6 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONDONTWRITEBYTECODE=1
-      - REDIS_URL=${REDIS_URL}
-      - DATABASE_URL=${DATABASE_URL}
-      - QUEUE_REDIS_URL=${QUEUE_REDIS_URL}
       - MONITORING_PORT=9181
       - FLASK_ENV=production
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
