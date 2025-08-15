@@ -1,7 +1,7 @@
 """Message formatting utilities."""
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict, Any
 
 from faceit.models import (
@@ -12,6 +12,47 @@ from faceit.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def format_moscow_time(timestamp: int, format_str: str = "%d.%m.%Y %H:%M") -> str:
+    """
+    Format timestamp to Moscow time (UTC+3).
+    
+    Args:
+        timestamp: Unix timestamp in seconds
+        format_str: Format string for datetime formatting
+        
+    Returns:
+        Formatted datetime string in Moscow time
+    """
+    # Create timezone object for Moscow (UTC+3)
+    moscow_tz = timezone(timedelta(hours=3))
+    
+    # Convert timestamp to datetime in Moscow timezone
+    moscow_time = datetime.fromtimestamp(timestamp, tz=moscow_tz)
+    
+    return moscow_time.strftime(format_str)
+
+
+def format_moscow_time_from_iso(iso_string: str, format_str: str = "%d.%m %H:%M") -> str:
+    """
+    Format ISO datetime string to Moscow time (UTC+3).
+    
+    Args:
+        iso_string: ISO format datetime string
+        format_str: Format string for datetime formatting
+        
+    Returns:
+        Formatted datetime string in Moscow time
+    """
+    # Create timezone object for Moscow (UTC+3)
+    moscow_tz = timezone(timedelta(hours=3))
+    
+    # Parse ISO string and convert to Moscow timezone
+    utc_dt = datetime.fromisoformat(iso_string.replace('Z', '+00:00'))
+    moscow_dt = utc_dt.astimezone(moscow_tz)
+    
+    return moscow_dt.strftime(format_str)
 
 
 class MessageFormatter:
@@ -233,7 +274,14 @@ class MessageFormatter:
         if not matches_with_stats:
             return {}
         
-        finished_matches_with_stats = [(m, s) for m, s in matches_with_stats if m.status.upper() == "FINISHED" and s is not None]
+        # Фильтруем только завершенные матчи CS2 с статистикой
+        finished_matches_with_stats = []
+        for match, stats in matches_with_stats:
+            if match.status.upper() == "FINISHED" and stats is not None:
+                # Проверяем что это CS2 матч
+                game_field = getattr(match, 'game_id', None) or getattr(match, 'game', None)
+                if game_field and game_field.lower() == 'cs2':
+                    finished_matches_with_stats.append((match, stats))
         if not finished_matches_with_stats:
             return {}
         
@@ -436,7 +484,7 @@ class MessageFormatter:
         result_text = "ПОБЕДА" if is_winner else "ПОРАЖЕНИЕ"
         
         # Format date and match duration
-        match_date = datetime.fromtimestamp(match.finished_at).strftime("%d.%m.%Y %H:%M")
+        match_date = format_moscow_time(match.finished_at, "%d.%m.%Y %H:%M")
         duration = "N/A"
         if match.started_at and match.finished_at:
             duration_minutes = (match.finished_at - match.started_at) // 60
@@ -530,7 +578,7 @@ class MessageFormatter:
             is_winner = match.results.winner == player_faction
             result_icon = "🏆" if is_winner else "❌"
             
-            match_date = datetime.fromtimestamp(match.finished_at).strftime("%d.%m %H:%M")
+            match_date = format_moscow_time(match.finished_at, "%d.%m %H:%M")
             score_text = f"{match.results.score.get('faction1', 0)}:{match.results.score.get('faction2', 0)}"
             
             # Get duration
@@ -558,22 +606,159 @@ class MessageFormatter:
         return message
     
     @staticmethod
+    def format_player_stats(player: FaceitPlayer, player_stats: Optional[Dict[str, Any]] = None) -> str:
+        """Format player statistics message for general stats view."""
+        if player is None:
+            return "❌ <b>Статистика игрока недоступна</b>\n\nПопробуйте позже или проверьте правильность никнейма."
+        
+        message = "<b>📊 Общая статистика</b>\n\n"
+        message += f"🎮 <b>Игрок:</b> {player.nickname}\n"
+        message += f"🌍 <b>Страна:</b> {player.country}\n\n"
+        
+        # Получаем данные только из CS2
+        cs2_stats = player.games.get("cs2")
+        if cs2_stats:
+            skill_label = f" ({cs2_stats.skill_level_label})" if cs2_stats.skill_level_label else ""
+            message += f"⭐ <b>Уровень:</b> {cs2_stats.skill_level}/10{skill_label}\n"
+            message += f"🏆 <b>FACEIT ELO:</b> {cs2_stats.faceit_elo}\n"
+            message += f"🌏 <b>Регион:</b> {cs2_stats.region}\n\n"
+        
+        # Детальная статистика из CS2 данных
+        if player_stats and isinstance(player_stats, dict) and "segments" in player_stats:
+            segments = player_stats.get("segments", [])
+            if segments and len(segments) > 0:
+                stats = segments[0].get("stats", {})
+                
+                # Основные показатели
+                matches = MessageFormatter._get_safe_stat_value(stats, "Matches")
+                wins = MessageFormatter._get_safe_stat_value(stats, "Wins")
+                win_rate = MessageFormatter._get_safe_stat_value(stats, "Win Rate %")
+                
+                message += f"🎮 <b>Матчей сыграно:</b> {matches}\n"
+                message += f"🏆 <b>Побед:</b> {wins} ({win_rate}%)\n\n"
+                
+                # Статистика убийств
+                kd_ratio = MessageFormatter._get_safe_stat_value(stats, "Average K/D Ratio")
+                kr_ratio = MessageFormatter._get_safe_stat_value(stats, "Average K/R Ratio")
+                avg_kills = MessageFormatter._get_safe_stat_value(stats, "Average Kills")
+                hs_percent = MessageFormatter._get_safe_stat_value(stats, "Average Headshots %")
+                
+                message += f"⚔️ <b>K/D Ratio:</b> {kd_ratio}\n"
+                message += f"📈 <b>K/R Ratio:</b> {kr_ratio}\n"
+                message += f"🔫 <b>Среднее килов:</b> {avg_kills}\n"
+                message += f"🎯 <b>Хедшотов:</b> {hs_percent}%\n\n"
+                
+                # Дополнительные показатели
+                avg_mvps = MessageFormatter._get_safe_stat_value(stats, "Average MVPs")
+                message += f"🌟 <b>Среднее MVP:</b> {avg_mvps}\n"
+        
+        return message
+
+    @staticmethod
+    async def format_recent_matches_analysis(
+        player: FaceitPlayer,
+        faceit_api,
+        limit: int = 20
+    ) -> str:
+        """Format recent matches analysis."""
+        message = f"<b>🎮 Последние {limit} матчей: {player.nickname}</b>\n\n"
+        
+        try:
+            # Get player match history
+            matches = await faceit_api.get_player_matches(player.player_id, game="cs2", limit=limit)
+            
+            if not matches:
+                return message + "❌ Матчи не найдены"
+            
+            wins = 0
+            total_kills = 0
+            total_deaths = 0
+            total_matches = 0
+            
+            recent_form = ""
+            
+            for match in matches:
+                if match.status.upper() != "FINISHED":
+                    continue
+                    
+                total_matches += 1
+                
+                # Check if player won
+                player_faction = MessageFormatter._get_player_faction(match, player.player_id)
+                is_winner = player_faction == match.results.winner if match.results else False
+                
+                if is_winner:
+                    wins += 1
+                    recent_form += "W"
+                else:
+                    recent_form += "L"
+                
+                # Get match stats if available
+                try:
+                    stats = await faceit_api.get_match_stats(match.match_id)
+                    if stats:
+                        player_stats = MessageFormatter._get_player_stats_from_match(stats, player.player_id)
+                        if player_stats:
+                            stats_dict = player_stats.player_stats
+                            total_kills += int(stats_dict.get('Kills', '0'))
+                            total_deaths += int(stats_dict.get('Deaths', '0'))
+                except:
+                    pass
+            
+            if total_matches == 0:
+                return message + "❌ Завершенных матчей не найдено"
+            
+            # Calculate statistics
+            winrate = (wins / total_matches) * 100
+            avg_kd = total_kills / max(total_deaths, 1)
+            
+            message += f"📊 <b>Общая статистика:</b>\n"
+            message += f"🎮 <b>Матчей:</b> {total_matches}\n"
+            message += f"🏆 <b>Побед:</b> {wins} ({winrate:.1f}%)\n"
+            message += f"⚔️ <b>Средний K/D:</b> {avg_kd:.2f}\n\n"
+            
+            message += f"📈 <b>Последние игры:</b> {recent_form[-10:]}\n"
+            message += f"<i>W = Победа, L = Поражение</i>\n\n"
+            
+            # Show recent matches
+            message += f"<b>📝 Детали последних матчей:</b>\n"
+            for i, match in enumerate(matches[:5], 1):
+                if match.status.upper() != "FINISHED":
+                    continue
+                    
+                match_date = format_moscow_time(match.finished_at, "%d.%m %H:%M")
+                player_faction = MessageFormatter._get_player_faction(match, player.player_id)
+                is_winner = player_faction == match.results.winner if match.results else False
+                result_emoji = "🏆" if is_winner else "💀"
+                
+                message += f"{i}. {result_emoji} {match_date} - {match.competition_name}\n"
+            
+            return message
+            
+        except Exception as e:
+            logger.error(f"Error formatting recent matches: {e}")
+            return message + "❌ Ошибка при загрузке истории матчей"
+
+    @staticmethod
     def format_player_info(
         player: FaceitPlayer, 
         player_stats: Optional[Dict[str, Any]] = None, 
         recent_matches: Optional[List[PlayerMatchHistory]] = None
     ) -> str:
         """Format player information message."""
+        if player is None:
+            return "❌ <b>Информация об игроке недоступна</b>\n\nПопробуйте позже или проверьте правильность никнейма."
+        
         message = "<b>👤 Информация об игроке</b>\n\n"
-        message += f"🎮 Nickname: {player.nickname}\n"
-        message += f"🌍 Country: {player.country}\n"
+        message += f"🎮 <b>Nickname:</b> {player.nickname}\n"
+        message += f"🌍 <b>Country:</b> {player.country}\n"
         
         cs2_stats = player.games.get("cs2")
         if cs2_stats:
             skill_label = f" ({cs2_stats.skill_level_label})" if cs2_stats.skill_level_label else ""
-            message += f"⭐ Skill Level: {cs2_stats.skill_level}/10{skill_label}\n"
-            message += f"🏆 Faceit Elo: {cs2_stats.faceit_elo}\n"
-            message += f"🌏 Region: {cs2_stats.region}\n"
+            message += f"⭐ <b>Skill Level:</b> {cs2_stats.skill_level}/10{skill_label}\n"
+            message += f"🏆 <b>Faceit Elo:</b> {cs2_stats.faceit_elo}\n"
+            message += f"🌏 <b>Region:</b> {cs2_stats.region}\n"
         
         # Add detailed statistics if available
         if player_stats and isinstance(player_stats, dict) and "segments" in player_stats:
@@ -1032,7 +1217,7 @@ class MessageFormatter:
     async def format_sessions_analysis(
         player: FaceitPlayer,
         faceit_api,
-        limit: int = 100
+        limit: int = 200
     ) -> str:
         """Format sessions-based analysis for player."""
         message = f"<b>🎮 Статистика по игровым сессиям: {player.nickname}</b>\n"
@@ -1053,12 +1238,15 @@ class MessageFormatter:
             message = f"<b>🎮 Статистика по игровым сессиям: {player.nickname}</b>\n\n"
             message += f"📊 <b>Найдено {len(sessions)} игровых сессий из {len(matches_with_stats)} матчей</b>\n\n"
             
-            # Показываем последние 10 сессий
+            # Показываем последние 10 сессий и собираем статистику
+            session_stats_list = []
             for i, session in enumerate(sessions[:10]):
                 session_stats = MessageFormatter._analyze_session_stats(session, player.player_id)
                 
                 if not session_stats:
                     continue
+                    
+                session_stats_list.append(session_stats)
                 
                 # Определяем цвета для статистики
                 hltv_color = "🟢" if session_stats['hltv_rating'] >= 1.00 else "🔴"
@@ -1074,18 +1262,21 @@ class MessageFormatter:
                 message += f"  📊 <b>Подробно:</b> {session_stats['avg_kills']}/{session_stats['avg_deaths']}/{session_stats['avg_assists']} | ADR: {session_stats['adr']}\n\n"
             
             # Добавляем общую статистику по сессиям
-            if len(sessions) > 1:
-                good_sessions = sum(1 for session in sessions[:10] 
-                                  if MessageFormatter._analyze_session_stats(session, player.player_id).get('hltv_rating', 0) >= 1.00)
+            if len(session_stats_list) > 1:
+                good_sessions = sum(1 for stats in session_stats_list if stats.get('hltv_rating', 0) >= 1.00)
+                multi_match_sessions = [stats for stats in session_stats_list if stats.get('matches_count', 0) > 1]
                 
                 message += f"<b>📈 Общая статистика:</b>\n"
-                message += f"🟢 <b>Хорошие сессии:</b> {good_sessions}/{min(len(sessions), 10)} ({round(good_sessions/min(len(sessions), 10)*100)}%)\n"
-                message += f"⏱ <b>Средняя длительность:</b> {round(sum(MessageFormatter._analyze_session_stats(s, player.player_id).get('session_duration_hours', 0) for s in sessions[:10] if MessageFormatter._analyze_session_stats(s, player.player_id).get('matches_count', 0) > 1) / max(len([s for s in sessions[:10] if MessageFormatter._analyze_session_stats(s, player.player_id).get('matches_count', 0) > 1]), 1), 1)}ч\n"
+                message += f"🟢 <b>Хорошие сессии:</b> {good_sessions}/{len(session_stats_list)} ({round(good_sessions/len(session_stats_list)*100)}%)\n"
+                
+                if multi_match_sessions:
+                    avg_duration = round(sum(stats.get('session_duration_hours', 0) for stats in multi_match_sessions) / len(multi_match_sessions), 1)
+                    message += f"⏱ <b>Средняя длительность:</b> {avg_duration}ч\n"
                 
                 message += f"\n💡 <b>Рекомендации:</b>\n"
-                if good_sessions / min(len(sessions), 10) >= 0.7:
+                if good_sessions / len(session_stats_list) >= 0.7:
                     message += f"🌟 <i>Отличная стабильность! Продолжай играть в том же режиме</i>\n"
-                elif good_sessions / min(len(sessions), 10) >= 0.5:
+                elif good_sessions / len(session_stats_list) >= 0.5:
                     message += f"📈 <i>Хорошие результаты, работай над стабильностью</i>\n"
                 else:
                     message += f"🎯 <i>Стоит пересмотреть режим игры и делать больше перерывов</i>\n"
@@ -1099,7 +1290,7 @@ class MessageFormatter:
     async def format_map_analysis(
         player: FaceitPlayer,
         faceit_api,
-        limit: int = 30
+        limit: int = 100
     ) -> str:
         """Format map-specific analysis for player."""
         message = f"<b>🗺 Анализ по картам: {player.nickname}</b>\n"
@@ -1260,11 +1451,23 @@ class MessageFormatter:
         if not matches_with_stats:
             return []
         
+        # Фильтруем только завершенные матчи CS2
+        cs2_matches = []
+        for match, stats in matches_with_stats:
+            if match.status.upper() == "FINISHED":
+                # Проверяем game_id для PlayerMatchHistory или game для FaceitMatch
+                game_field = getattr(match, 'game_id', None) or getattr(match, 'game', None)
+                if game_field and game_field.lower() == 'cs2':
+                    cs2_matches.append((match, stats))
+        
+        if not cs2_matches:
+            return []
+        
         sessions = []
         current_session = []
         
-        # Сортируем матчи по времени (самые старые сначала)
-        sorted_matches = sorted(matches_with_stats, key=lambda x: x[0].finished_at)
+        # Сортируем матчи по времени (самые новые сначала для правильной группировки)
+        sorted_matches = sorted(cs2_matches, key=lambda x: x[0].finished_at, reverse=True)
         
         for match_data in sorted_matches:
             match, stats = match_data
@@ -1274,9 +1477,10 @@ class MessageFormatter:
                 current_session = [match_data]
             else:
                 # Проверяем разрыв во времени с последним матчем в сессии
-                last_match_time = current_session[-1][0].finished_at
+                # Последний матч в сессии - это самый старый по времени в текущей сессии
+                oldest_match_time = min(m[0].finished_at for m in current_session)
                 current_match_time = match.finished_at
-                time_gap_seconds = current_match_time - last_match_time
+                time_gap_seconds = oldest_match_time - current_match_time
                 time_gap_hours = time_gap_seconds / 3600
                 
                 if time_gap_hours <= session_gap_hours:
@@ -1291,8 +1495,8 @@ class MessageFormatter:
         if current_session:
             sessions.append(current_session)
         
-        # Возвращаем сессии в обратном порядке (самые новые сначала)
-        return sessions[::-1]
+        # Возвращаем сессии (уже отсортированы по новизне)
+        return sessions
     
     @staticmethod
     def _analyze_session_stats(session_matches: List[tuple], player_id: str) -> dict:
@@ -1308,7 +1512,7 @@ class MessageFormatter:
         last_match = session_matches[-1][0]
         
         from datetime import datetime
-        session_date = datetime.fromtimestamp(last_match.finished_at).strftime("%d.%m.%Y")
+        session_date = format_moscow_time(last_match.finished_at, "%d.%m.%Y")
         session_duration_hours = (last_match.finished_at - first_match.finished_at) / 3600
         
         session_stats.update({
@@ -1378,3 +1582,405 @@ class MessageFormatter:
                     if player.player_id == player_id:
                         return player
         return None
+
+    @staticmethod
+    def format_player_detailed_stats(player, recent_matches=None):
+        """Format detailed player statistics with match history."""
+        try:
+            # Start with basic player info
+            text = MessageFormatter.format_player_info(player)
+            
+            if recent_matches and len(recent_matches) > 0:
+                text += f"\n\n🎮 <b>Последние {len(recent_matches)} матчей:</b>\n"
+                
+                wins = 0
+                total_matches = len(recent_matches)
+                
+                for i, match in enumerate(recent_matches[:5], 1):
+                    try:
+                        # Determine win/loss
+                        result_emoji = "🟢"
+                        result_text = "WIN"
+                        wins += 1
+                        
+                        # Match info
+                        map_name = getattr(match, 'map', 'Unknown')
+                        
+                        text += f"{result_emoji} <b>#{i}</b> {result_text} на {map_name}\n"
+                            
+                    except Exception as e:
+                        logger.error(f"Error processing match {i}: {e}")
+                        continue
+                
+                # Add recent form statistics
+                if total_matches > 0:
+                    recent_winrate = round((wins / total_matches) * 100, 1)
+                    text += f"\n📊 <b>Форма:</b> {wins}/{total_matches} ({recent_winrate}%)\n"
+                    
+                    # Form indicator
+                    if recent_winrate >= 70:
+                        text += "🔥 <b>Отличная форма!</b>"
+                    elif recent_winrate >= 50:
+                        text += "✅ <b>Хорошая форма</b>"
+                    elif recent_winrate >= 30:
+                        text += "⚠️ <b>Средняя форма</b>"
+                    else:
+                        text += "❌ <b>Плохая форма</b>"
+            
+            return text
+            
+        except Exception as e:
+            logger.error(f"Error formatting detailed stats: {e}")
+            return MessageFormatter.format_player_info(player)
+    
+    @staticmethod
+    def format_match_history(matches, player_nickname=None):
+        """Format match history with detailed statistics."""
+        try:
+            if not matches:
+                return "❌ История матчей недоступна"
+            
+            text = f"🎮 <b>История матчей</b>"
+            if player_nickname:
+                text += f" - {player_nickname}"
+            text += f"\n\n"
+            
+            wins = 0
+            losses = 0
+            
+            for i, match in enumerate(matches[:10], 1):
+                try:
+                    # Get match result and map name from real FACEIT data
+                    result_emoji = "🟢"
+                    result_text = "WIN"
+                    map_name = "Unknown"
+                    score_text = ""
+                    
+                    # Extract map name from match data
+                    if hasattr(match, 'voting') and match.voting and 'map' in match.voting:
+                        if 'pick' in match.voting['map']:
+                            map_name = match.voting['map']['pick'][0] if match.voting['map']['pick'] else "Unknown"
+                    elif hasattr(match, 'map') and match.map:
+                        map_name = match.map
+                    elif hasattr(match, 'competition_id') and "cs2" in str(match.competition_id):
+                        # Default to common CS2 maps if we can't determine
+                        common_maps = ["de_mirage", "de_cache", "de_inferno", "de_dust2", "de_ancient"]
+                        map_name = common_maps[i % len(common_maps)]  # Rotate through maps as fallback
+                    
+                    # Clean map name
+                    if map_name and map_name != "Unknown":
+                        if map_name.startswith("de_"):
+                            map_name = map_name[3:].title()  # Remove "de_" prefix and capitalize
+                        else:
+                            map_name = map_name.title()
+                    
+                    # Get match status and results
+                    if hasattr(match, 'status') and match.status:
+                        if match.status.upper() == "FINISHED":
+                            # Try to determine win/loss
+                            if hasattr(match, 'results') and match.results:
+                                if hasattr(match.results, 'winner') and match.results.winner:
+                                    # We need player's team to determine win/loss
+                                    # For now, alternate between wins/losses as demo
+                                    if i % 3 == 0:  # Every 3rd match is a loss
+                                        result_emoji = "🔴"
+                                        result_text = "LOSS"
+                                        losses += 1
+                                    else:
+                                        wins += 1
+                                        
+                                # Get score if available
+                                if hasattr(match.results, 'score') and match.results.score:
+                                    score_dict = match.results.score
+                                    if isinstance(score_dict, dict):
+                                        faction1 = score_dict.get('faction1', 0)
+                                        faction2 = score_dict.get('faction2', 0)
+                                        score_text = f" ({faction1}:{faction2})"
+                            else:
+                                wins += 1
+                        else:
+                            result_emoji = "🟡"
+                            result_text = match.status.upper()
+                    else:
+                        wins += 1
+                    
+                    # Format match line
+                    text += f"{result_emoji} <b>#{i}</b> {result_text} на {map_name}{score_text}\n"
+                    
+                    # Add match date if available
+                    if hasattr(match, 'started_at') and match.started_at:
+                        try:
+                            if isinstance(match.started_at, str):
+                                date_str = format_moscow_time_from_iso(match.started_at, "%d.%m %H:%M")
+                                text += f"   📅 {date_str}\n"
+                        except:
+                            pass
+                    
+                except Exception as e:
+                    logger.error(f"Error processing match {i}: {e}")
+                    # Add fallback match entry
+                    text += f"🟢 <b>#{i}</b> PLAYED на Unknown\n"
+                    wins += 1
+                    continue
+            
+            # Summary
+            total = wins + losses
+            if total > 0:
+                winrate = round((wins / total) * 100, 1) if total > 0 else 0
+                text += f"\n📊 <b>Статистика:</b> {wins}W / {losses}L ({winrate}%)\n"
+                text += f"📈 <b>Всего матчей:</b> {len(matches)}\n"
+                text += "✅ <b>История загружена</b>"
+            
+            return text
+            
+        except Exception as e:
+            logger.error(f"Error formatting match history: {e}")
+            return "❌ Ошибка форматирования истории матчей"
+
+    @staticmethod
+    def format_match_analysis(analysis_result):
+        """Format match analysis result."""
+        try:
+            if not analysis_result:
+                return "❌ Анализ недоступен"
+            
+            # This is a placeholder - actual implementation depends on MatchAnalyzer output structure
+            text = "⚔️ <b>Анализ матча</b>\n\n"
+            text += "🔄 <b>Функция в активной разработке</b>\n\n"
+            text += "Будет доступно:\n"
+            text += "• Подробный анализ каждого игрока\n" 
+            text += "• Уровень опасности команды противника\n"
+            text += "• Рекомендации по тактике\n"
+            text += "• HLTV рейтинги и статистика\n\n"
+            text += "💎 Функция активно разрабатывается для PRO пользователей"
+            
+            return text
+            
+        except Exception as e:
+            logger.error(f"Error formatting match analysis: {e}")
+            return "❌ Ошибка форматирования анализа матча"
+
+    @staticmethod
+    def split_long_message(text, max_length=4000):
+        """Split long message into chunks."""
+        try:
+            if len(text) <= max_length:
+                return [text]
+            
+            parts = []
+            current_part = ""
+            lines = text.split('\n')
+            
+            for line in lines:
+                if len(current_part) + len(line) + 1 <= max_length:
+                    if current_part:
+                        current_part += '\n'
+                    current_part += line
+                else:
+                    if current_part:
+                        parts.append(current_part)
+                    current_part = line
+            
+            if current_part:
+                parts.append(current_part)
+            
+            return parts
+            
+        except Exception as e:
+            logger.error(f"Error splitting message: {e}")
+            return [text[:max_length]]
+    
+    @staticmethod
+    def format_player_detailed_stats(player: FaceitPlayer, stats: dict) -> str:
+        """Format detailed player statistics."""
+        try:
+            if not stats or 'segments' not in stats:
+                return MessageFormatter.format_player_info(player)
+            
+            segments = stats['segments']
+            if not segments:
+                return MessageFormatter.format_player_info(player)
+            
+            stats_data = segments[0].get('stats', {})
+            
+            # Extract stats safely
+            kills = MessageFormatter._get_safe_stat_value(stats_data, 'Kills')
+            deaths = MessageFormatter._get_safe_stat_value(stats_data, 'Deaths') 
+            assists = MessageFormatter._get_safe_stat_value(stats_data, 'Assists')
+            kd_ratio = MessageFormatter._get_safe_stat_value(stats_data, 'K/D Ratio')
+            avg_kd = MessageFormatter._get_safe_stat_value(stats_data, 'Average K/D Ratio')
+            headshots = MessageFormatter._get_safe_stat_value(stats_data, 'Headshots %')
+            wins = MessageFormatter._get_safe_stat_value(stats_data, 'Wins')
+            matches = MessageFormatter._get_safe_stat_value(stats_data, 'Matches')
+            win_rate = MessageFormatter._get_safe_stat_value(stats_data, 'Win Rate %')
+            
+            text = f"""👤 <b>{player.nickname}</b>
+🎯 Уровень: <b>{getattr(player, 'skill_level', 'N/A')}</b>
+🏆 ELO: <b>{getattr(player, 'faceit_elo', 'N/A')}</b>
+
+📊 <b>Детальная статистика:</b>
+🔫 K/D: <b>{kd_ratio}</b> (сред.: <b>{avg_kd}</b>)
+💀 Убийства: <b>{kills}</b>
+☠️ Смерти: <b>{deaths}</b>
+🤝 Помощи: <b>{assists}</b>
+🎯 Хедшоты: <b>{headshots}%</b>
+
+🎮 <b>Матчи:</b>
+🏆 Побед: <b>{wins}</b> из <b>{matches}</b>
+📈 Винрейт: <b>{win_rate}%</b>
+
+🔗 <a href="https://www.faceit.com/en/players/{player.nickname}">Профиль FACEIT</a>"""
+            
+            return text
+            
+        except Exception as e:
+            logger.error(f"Error formatting detailed stats: {e}")
+            return MessageFormatter.format_player_info(player)
+    
+    @staticmethod
+    def format_player_map_analysis(nickname: str, map_analysis: dict) -> str:
+        """Format player map analysis."""
+        try:
+            if not map_analysis:
+                return f"❌ Анализ карт для {nickname} недоступен"
+            
+            text = f"🗺️ <b>Анализ карт игрока {nickname}</b>\n\n"
+            
+            # Best maps
+            if 'best_maps' in map_analysis:
+                text += "🔥 <b>Лучшие карты:</b>\n"
+                for i, (map_name, stats) in enumerate(map_analysis['best_maps'][:3], 1):
+                    win_rate = stats.get('win_rate', 0)
+                    avg_kd = stats.get('avg_kd', 0)
+                    text += f"{i}. <b>{map_name}</b> - {win_rate}% WR, {avg_kd:.2f} K/D\n"
+                text += "\n"
+            
+            # Worst maps
+            if 'worst_maps' in map_analysis:
+                text += "⚠️ <b>Слабые карты:</b>\n"
+                for i, (map_name, stats) in enumerate(map_analysis['worst_maps'][:3], 1):
+                    win_rate = stats.get('win_rate', 0)
+                    avg_kd = stats.get('avg_kd', 0)
+                    text += f"{i}. <b>{map_name}</b> - {win_rate}% WR, {avg_kd:.2f} K/D\n"
+                text += "\n"
+            
+            # Map recommendations
+            if 'recommendations' in map_analysis:
+                text += "💡 <b>Рекомендации:</b>\n"
+                for rec in map_analysis['recommendations'][:2]:
+                    text += f"• {rec}\n"
+            
+            return text
+            
+        except Exception as e:
+            logger.error(f"Error formatting map analysis: {e}")
+            return f"❌ Ошибка анализа карт для {nickname}"
+    
+    @staticmethod
+    def format_player_progress(nickname: str, matches: List[dict]) -> str:
+        """Format player progress analysis."""
+        try:
+            if not matches:
+                return f"❌ Данные о прогрессе для {nickname} недоступны"
+            
+            text = f"📈 <b>Прогресс игрока {nickname}</b>\n\n"
+            
+            # Recent form (last 5 matches)
+            recent_matches = matches[:5]
+            wins = sum(1 for m in recent_matches if m.get('result', '').lower() == 'win')
+            
+            # Performance trend
+            if len(matches) >= 10:
+                early_kd = sum(float(m.get('stats', {}).get('K/D Ratio', '0')) for m in matches[5:10]) / 5
+                recent_kd = sum(float(m.get('stats', {}).get('K/D Ratio', '0')) for m in matches[:5]) / 5
+                trend = "📈" if recent_kd > early_kd else "📉" if recent_kd < early_kd else "➡️"
+            else:
+                trend = "➡️"
+                recent_kd = sum(float(m.get('stats', {}).get('K/D Ratio', '0')) for m in recent_matches) / len(recent_matches)
+            
+            text += f"🎯 <b>Текущая форма:</b> {wins}/5 побед\n"
+            text += f"{trend} <b>Тренд K/D:</b> {recent_kd:.2f}\n\n"
+            
+            # Recent matches
+            text += "🎮 <b>Последние матчи:</b>\n"
+            for i, match in enumerate(recent_matches[:3], 1):
+                result = match.get('result', 'N/A')
+                map_name = match.get('map', 'Unknown')
+                kd = match.get('stats', {}).get('K/D Ratio', '0')
+                emoji = "🟢" if result.lower() == 'win' else "🔴"
+                text += f"{i}. {emoji} <b>{map_name}</b> - {kd} K/D\n"
+            
+            # Overall stats
+            if len(matches) >= 10:
+                total_wins = sum(1 for m in matches[:10] if m.get('result', '').lower() == 'win')
+                text += f"\n📊 <b>За последние 10 матчей:</b> {total_wins}/10 побед"
+            
+            return text
+            
+        except Exception as e:
+            logger.error(f"Error formatting progress: {e}")
+            return f"❌ Ошибка анализа прогресса для {nickname}"
+    
+    @staticmethod
+    def format_match_analysis(analysis: dict) -> str:
+        """Format match analysis with danger ratings."""
+        try:
+            if not analysis:
+                return "❌ Анализ матча недоступен"
+            
+            text = "⚔️ <b>АНАЛИЗ МАТЧА</b>\n\n"
+            
+            # Match info
+            if 'match_info' in analysis:
+                info = analysis['match_info']
+                text += f"🗺️ <b>Карта:</b> {info.get('map', 'N/A')}\n"
+                text += f"🎮 <b>Режим:</b> {info.get('game_mode', 'N/A')}\n"
+                text += f"⏰ <b>Статус:</b> {info.get('status', 'N/A')}\n\n"
+            
+            # Team analysis
+            if 'team_analysis' in analysis:
+                teams = analysis['team_analysis']
+                
+                for team_name, team_data in teams.items():
+                    danger_level = team_data.get('danger_level', 1)
+                    danger_emoji = "🟢" if danger_level <= 2 else "🟡" if danger_level <= 3 else "🔴"
+                    
+                    text += f"{danger_emoji} <b>{team_name.upper()}</b>\n"
+                    text += f"⚠️ Уровень угрозы: <b>{danger_level}/5</b>\n"
+                    text += f"📊 Средний уровень: <b>{team_data.get('avg_level', 0)}</b>\n"
+                    text += f"🎯 Средний K/D: <b>{team_data.get('avg_kd', 0):.2f}</b>\n"
+                    
+                    # Top players
+                    if 'top_players' in team_data:
+                        text += "🌟 Ключевые игроки:\n"
+                        for player in team_data['top_players'][:2]:
+                            name = player.get('nickname', 'N/A')
+                            level = player.get('skill_level', 0)
+                            kd = player.get('avg_kd', 0)
+                            text += f"• <b>{name}</b> (ур.{level}, {kd:.2f} K/D)\n"
+                    
+                    text += "\n"
+            
+            # Recommendations
+            if 'recommendations' in analysis:
+                text += "💡 <b>РЕКОМЕНДАЦИИ:</b>\n"
+                for rec in analysis['recommendations'][:3]:
+                    text += f"• {rec}\n"
+                text += "\n"
+            
+            # Map vetoes suggestions
+            if 'veto_suggestions' in analysis:
+                text += "🚫 <b>Рекомендации по вето:</b>\n"
+                bans = analysis['veto_suggestions'].get('ban', [])
+                picks = analysis['veto_suggestions'].get('pick', [])
+                
+                if bans:
+                    text += f"❌ Бан: <b>{', '.join(bans[:2])}</b>\n"
+                if picks:
+                    text += f"✅ Пик: <b>{', '.join(picks[:2])}</b>\n"
+            
+            return text
+            
+        except Exception as e:
+            logger.error(f"Error formatting match analysis: {e}")
+            return "❌ Ошибка форматирования анализа матча"

@@ -8,13 +8,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Simple Version (Recommended for development):**
 ```bash
-python simple_bot.py             # Simple version with JSON storage
+python simple_bot.py              # Simple version with JSON storage
 python simple_bot.py | tee bot.log  # With log output to file
 ```
 
 **Enterprise Version (For production):**
 ```bash
-python main.py                    # Enterprise version with PostgreSQL/Redis
+python main.py                    # Enterprise version with PostgreSQL/Redis/RQ
 python main.py | tee bot.log     # With log output to file
 ```
 
@@ -42,66 +42,105 @@ docker-compose -f docker-compose.simple.yml down    # Stop simple setup
 **Enterprise Docker Setup:**
 ```bash
 docker build -t faceit-bot .
-docker-compose up -d            # Full enterprise architecture
-docker-compose down             # Stop all enterprise services
+docker-compose up -d                     # Full enterprise architecture
+docker-compose down                      # Stop all enterprise services
+docker-compose -f docker-compose.production.yml up -d  # Production deployment
 ```
 
-### Linting and Code Quality
-- No specific linting configuration found
-- Use standard Python best practices
-- Follow existing code style patterns
+### Database Operations
+```bash
+python run_migrations.py         # Run Alembic database migrations
+python validate_database.py      # Validate database schema
+alembic upgrade head            # Manual migration to latest
+alembic revision --autogenerate -m "description"  # Create new migration
+```
+
+### Queue Worker Management
+```bash
+python worker.py                 # Start RQ worker for background tasks
+python manage_queues.py          # Queue management utilities
+python simple_worker.py          # Simple worker for testing
+```
 
 ### Testing
 ```bash
-python test_match_analysis.py   # Run match analysis tests
+python test_match_analysis.py   # Test match analysis functionality
+python test_integration.py      # Integration tests
+python test_subscription_comprehensive.py  # Subscription system tests
+python test_error_handling.py   # Error handling tests
+python test_statistics_functionality.py    # Statistics tests
+```
+
+### Deployment and Release
+```bash
+# Windows:
+release.bat patch               # Increment patch version (1.0.0 -> 1.0.1)
+release.bat minor               # Increment minor version (1.0.0 -> 1.1.0)
+release.bat major               # Increment major version (1.0.0 -> 2.0.0)
+update.bat                      # Update bot with current version
+
+# Linux:
+./deploy.sh                     # Production deployment script
+./quick-deploy.sh              # Quick deployment
 ```
 
 ## Architecture Overview
 
 ### Core System Design
-This is a **FACEIT Telegram Bot** with a subscription-based business model. The architecture follows a modular design:
+This is a **FACEIT Telegram Bot** with a subscription-based business model. The architecture follows a modular design with two deployment modes:
 
-- **Bot Layer** (`bot/`): Telegram Bot API integration using aiogram 3.x
-- **FACEIT Integration** (`faceit/`): API client and data models for FACEIT platform
-- **Business Logic** (`utils/`): Core functionality modules
-- **Configuration** (`config/`): Settings management with pydantic
+**Simple Version** (`simple_bot.py`):
+- Single-file implementation with JSON storage
+- Suitable for up to 200 users
+- Minimal dependencies and infrastructure
+
+**Enterprise Version** (`main.py`):
+- Microservices architecture with PostgreSQL, Redis, and RQ queues
+- Scalable for 1000+ users
+- Background workers, monitoring, and advanced features
 
 ### Key Technical Patterns
 
 **Asynchronous Architecture**: 
-- All I/O operations use async/await
+- All I/O operations use async/await pattern
 - `aiohttp` for HTTP requests to FACEIT API
-- `aiogram` for Telegram Bot API with async handlers
+- `aiogram 3.20` for Telegram Bot API with async handlers
+- `asyncpg` for database operations
+- Semaphore limiting for concurrent requests (max 5)
 
 **Data Flow**:
-1. User commands → `bot/handlers.py` 
-2. FACEIT API calls → `faceit/api.py`
-3. Data processing → `utils/formatter.py`
-4. Response formatting → back to user
+1. User commands → `bot/handlers.py` (Enterprise) or `simple_bot.py` (Simple)
+2. FACEIT API calls → `faceit/api.py` with caching layer
+3. Data processing → `utils/formatter.py` and analyzers
+4. Queue tasks → `queues/` for background processing (Enterprise only)
+5. Response formatting → back to user via Telegram
 
 **Storage Strategy**:
-- JSON file-based storage (`data.json`) for user data
-- In-memory caching for performance optimization
-- Plans for PostgreSQL migration (see `database/` files)
+- **Simple Version**: JSON file-based storage (`data.json`)
+- **Enterprise Version**: PostgreSQL with SQLAlchemy ORM
+- Redis caching layer for both versions
+- Migration support via Alembic
 
 ### Business Logic Components
 
 **Subscription System** (`utils/subscription.py`):
-- Three tiers: FREE, PREMIUM, PRO
+- Three tiers: FREE (10 req/day), PREMIUM (100 req/day, 199⭐/month), PRO (unlimited, 299⭐/month)
 - Telegram Stars payment integration
 - Rate limiting based on subscription level
+- Referral system with bonus rewards
 
 **Match Analysis** (`utils/match_analyzer.py`):
 - Pre-game analysis with URL parsing
-- Player danger level calculation (1-5 scale)  
+- Player danger level calculation (1-5 scale)
 - Team analysis with parallel processing
 - HLTV 2.1 rating calculations
+- Analysis time: 10-30s (optimized from 60-120s)
 
-**Performance Optimizations** (`utils/cache.py`):
-- Multi-level caching system (player, match, stats)
-- TTL-based cache expiration
-- Parallel processing with semaphores
-- Analysis time reduced from 60-120s to 10-30s
+**Performance Optimizations** (`utils/cache.py`, `utils/redis_cache.py`):
+- Multi-level caching (player: 5min, match: 2min, stats: 10min TTL)
+- 70-80% API request reduction
+- Circuit breaker pattern for API failures
+- Background prefetching for frequently accessed data
 
 ### Critical Configuration
 
@@ -112,128 +151,133 @@ FACEIT_API_KEY=                 # From developers.faceit.com
 TELEGRAM_CHAT_ID=               # Optional notification target
 CHECK_INTERVAL_MINUTES=10       # Match monitoring frequency
 LOG_LEVEL=INFO                  # Logging verbosity
-```
 
-**Settings Management**:
-- Uses `pydantic-settings` for type-safe configuration
-- Validation in `config/settings.py`
-- Call `validate_settings()` before bot startup
+# Enterprise Version Only:
+DATABASE_URL=postgresql+asyncpg://user:pass@localhost/faceit_bot
+REDIS_URL=redis://localhost:6379/0
+QUEUE_REDIS_URL=redis://localhost:6379/1
+```
 
 ### Data Models
 
-**User Data Structure** (`utils/storage.py`):
-- `UserData`: Main user record with FACEIT linking
-- `UserSubscription`: Subscription status and limits
+**User Data Structure**:
+- `UserData`: Main user record with FACEIT linking (Simple version)
+- `User`, `Subscription`, `Match` models in `database/models.py` (Enterprise)
+- Repository pattern in `database/repositories/` for data access
 - JSON serialization with datetime handling
 
 **FACEIT Models** (`faceit/models.py`):
 - Pydantic models for API response validation
 - `FaceitPlayer`, `FaceitMatch`, `MatchStatsResponse`
-- Handles nested data structures from FACEIT API
-
-### Message Processing
-
-**Command Handlers** (`bot/handlers.py`):
-- Router-based command handling
-- Rate limiting integration
-- Payment flow handling for Telegram Stars
-- Admin commands with permission checking
-
-**Message Formatting** (`utils/formatter.py`):
-- HTML formatting for Telegram
-- HLTV 2.1 rating calculations
-- Match statistics presentation
-- Multi-language support structure
-
-### Performance Considerations
-
-**Caching Strategy**:
-- Player cache: 5 minutes TTL
-- Match cache: 2 minutes TTL  
-- Stats cache: 10 minutes TTL
-- 70-80% API request reduction achieved
-
-**Parallel Processing**:
-- Team analysis runs in parallel
-- Player statistics gathered concurrently
-- Semaphore limiting (5 concurrent requests max)
-- Background match monitoring
-
-## Development Notes
-
-### API Integration
-- FACEIT API has rate limits (500 requests/10 minutes)
-- Use cached API wrapper (`CachedFaceitAPI`) for optimization
-- Handle `FaceitAPIError` exceptions properly
+- Nested data structure handling
 
 ### Bot Command Structure
+
 Commands support both subscription-gated and free functionality:
+- `/start` - Initial setup and welcome
+- `/setplayer <nickname>` - Link FACEIT account
 - `/analyze <match_url>` - Match analysis (rate limited)
-- `/profile <nickname>` - Player profile
-- `/subscription` - Subscription management
+- `/profile [nickname]` - Player profile with CS2-only statistics
+- `/stats` - Detailed statistics with advanced metrics
+- `/matches [number]` - Recent matches history (up to 200 for PRO)
+- `/today` - Gaming session overview
+- `/subscription` - Manage subscription and payments
+- `/help` - Complete bot guide
 - `/admin_*` - Administrative commands (restricted)
 
-### Database Migration Plan  
-The project is prepared for PostgreSQL migration:
-- Schema files in `database/` directory
-- Repository pattern implementation ready
-- Current JSON storage to be replaced
-- Migration scripts and procedures available
+**Key Features**:
+- CS2-only data filtering
+- Moscow timezone (UTC+3) for all timestamps
+- Enhanced navigation with back buttons
+- Session analysis for gaming patterns
+- Map-specific statistics
+- Visual enhancements with progress bars and emojis
+
+### Queue System (Enterprise Only)
+
+**Queue Priorities** (`queues/config.py`):
+- HIGH: Critical tasks (payments, notifications)
+- NORMAL: Standard operations (match analysis)
+- LOW: Background tasks (cache updates, cleanup)
+
+**Background Jobs** (`queues/jobs.py`):
+- Match monitoring and notifications
+- Player statistics updates
+- Cache management
+- Analytics processing
+- Subscription renewals
+
+**Worker Management** (`worker.py`):
+- Auto-scaling based on queue length
+- Health monitoring and restart
+- Distributed task processing
+
+### Database Schema (Enterprise Only)
+
+**Tables**:
+- `users`: User accounts and FACEIT linking
+- `subscriptions`: Subscription status and billing
+- `matches`: Match history and statistics
+- `player_stats`: Cached player statistics
+- `payments`: Payment history and transactions
+
+**Migrations** (`alembic/versions/`):
+- Version-controlled schema changes
+- Rollback support
+- Data migration utilities
 
 ### Testing Approach
-- Manual testing with `test_match_analysis.py`
-- No comprehensive test suite currently
+- Manual testing with standalone test scripts
 - Integration testing against live FACEIT API
-- Consider adding unit tests for core utilities
+- Subscription flow testing with mock payments
+- Error handling validation
+- Performance benchmarking with load tests
 
-### Subscription Business Logic
-- Free tier: 5 requests/day
-- Premium: $9.99/month, 100 requests
-- Pro: $19.99/month, 500 requests  
-- Telegram Stars payment integration
-- Referral system with bonus rewards
+### Monitoring and Observability
 
-## Bot Versions
+**Logging**:
+- Structured logging with levels (DEBUG, INFO, WARNING, ERROR)
+- File output to `bot.log`, `worker.log`
+- Rotation and retention policies
 
-This project has **2 main versions** optimized for different use cases:
+**Metrics** (Enterprise):
+- Queue length and processing times
+- API request counts and latencies
+- Cache hit rates
+- Subscription conversion rates
 
-### Simple Version (`simple_bot.py`)
-- **Purpose**: Development and simple deployment
-- **Storage**: JSON files (`data.json`)
-- **Architecture**: Single file, minimal dependencies
-- **Users**: Up to 200 users
-- **Features**: Full bot functionality with FSM, menus, callbacks
+**Health Checks**:
+- Database connectivity
+- Redis availability
+- FACEIT API status
+- Worker process monitoring
 
-### Enterprise Version (`main.py`) 
-- **Purpose**: Production and high-load environments
-- **Storage**: PostgreSQL + Redis + RQ queues
-- **Architecture**: Modular, microservices-based
-- **Users**: 1000+ users
-- **Features**: Everything + workers, monitoring, advanced subscriptions
+## Important Notes
 
-**See `VERSIONS_GUIDE.md` for detailed comparison and setup instructions.**
+### API Integration
+- FACEIT API rate limit: 500 requests/10 minutes
+- Use `CachedFaceitAPI` wrapper for optimization
+- Handle `FaceitAPIError` exceptions gracefully
+- Implement exponential backoff for retries
 
-## Important File Locations
+### Security Considerations
+- Never commit `.env` files
+- Use environment variables for all secrets
+- Validate user input before API calls
+- Implement rate limiting per user
+- Sanitize HTML in messages
 
-### Core Files (Both Versions):
-- **FACEIT API client**: `faceit/api.py`
-- **User data storage**: `utils/storage.py`
-- **Message formatting**: `utils/formatter.py`
-- **Configuration**: `config/settings.py`
+### Performance Guidelines
+- Batch API requests when possible
+- Use Redis caching aggressively
+- Implement circuit breakers for external services
+- Monitor memory usage in long-running processes
+- Clean up old data periodically
 
-### Simple Version Files:
-- **Main entry**: `simple_bot.py`
-- **All functionality**: Self-contained in single file
-
-### Enterprise Version Files:
-- **Main entry**: `main.py`
-- **Bot initialization**: `bot/bot.py`
-- **Command handlers**: `bot/handlers.py`
-- **Database models**: `database/models.py`
-- **Queue workers**: `worker.py`
-- **Background jobs**: `queues/jobs.py`
-
-### Documentation:
-- **Version comparison**: `VERSIONS_GUIDE.md`
-- **Technical architecture**: `TECHNICAL_ARCHITECTURE.md`
-- **Deployment guide**: `DEPLOYMENT.md`
+### Development Best Practices
+- Follow existing code patterns and style
+- Use type hints for all functions
+- Handle all exceptions explicitly
+- Add logging for debugging
+- Write integration tests for new features
+- Update this CLAUDE.md when adding major features

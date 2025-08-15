@@ -6,7 +6,7 @@ from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 
 from config.settings import settings
-from .handlers import router, init_payment_manager
+from .handlers import router
 from admin.queue_management import admin_queue_router
 from faceit.api import FaceitAPI
 from utils.storage import storage
@@ -37,8 +37,6 @@ class FaceitTelegramBot:
         # Include admin queue management router
         self.dp.include_router(admin_queue_router)
         
-        # Initialize payment manager
-        init_payment_manager(self.bot)
         
         logger.info("Bot initialized successfully")
     

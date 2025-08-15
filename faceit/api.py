@@ -23,28 +23,67 @@ class FaceitAPIError(Exception):
 
 
 class FaceitAPI:
-    """FACEIT API client."""
+    """FACEIT API client with connection pooling and performance optimizations."""
     
     def __init__(self):
         self.base_url = settings.faceit_api_base_url
         self.api_key = settings.faceit_api_key
         self.timeout = ClientTimeout(total=30)
         
+        # Connection pooling configuration - will be created when needed
+        self.connector = None
+        self.session = None
+        self._session_lock = None
+        
+    async def _get_session(self) -> aiohttp.ClientSession:
+        """Get or create a shared session with connection pooling."""
+        if self._session_lock is None:
+            self._session_lock = asyncio.Lock()
+            
+        if self.connector is None:
+            self.connector = aiohttp.TCPConnector(
+                limit=100,  # Total pool size
+                limit_per_host=20,  # Per-host limit
+                ttl_dns_cache=300,  # DNS cache TTL
+                use_dns_cache=True,
+                keepalive_timeout=30,
+                enable_cleanup_closed=True,
+            )
+            
+        if self.session is None or self.session.closed:
+            async with self._session_lock:
+                if self.session is None or self.session.closed:
+                    self.session = aiohttp.ClientSession(
+                        connector=self.connector,
+                        timeout=self.timeout
+                    )
+        return self.session
+    
+    async def close(self):
+        """Close the session and connector."""
+        if self.session and not self.session.closed:
+            await self.session.close()
+        if self.connector:
+            await self.connector.close()
+    
     async def _make_request(
         self, 
         method: str, 
         endpoint: str, 
-        params: Optional[Dict[str, Any]] = None
+        params: Optional[Dict[str, Any]] = None,
+        max_retries: int = 3
     ) -> Optional[Dict[str, Any]]:
-        """Make HTTP request to FACEIT API."""
+        """Make HTTP request to FACEIT API with retry logic."""
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
         
-        try:
-            async with aiohttp.ClientSession(timeout=self.timeout) as session:
+        session = await self._get_session()
+        
+        for attempt in range(max_retries):
+            try:
                 async with session.request(
                     method, 
                     url, 
@@ -53,15 +92,37 @@ class FaceitAPI:
                 ) as response:
                     if response.status == 404:
                         return None
+                    elif response.status == 429:  # Rate limit
+                        retry_after = int(response.headers.get('Retry-After', 60))
+                        logger.warning(f"Rate limited, waiting {retry_after} seconds")
+                        await asyncio.sleep(retry_after)
+                        continue
+                    elif response.status >= 500:  # Server error - retry
+                        if attempt < max_retries - 1:
+                            wait_time = (2 ** attempt) * 1  # Exponential backoff
+                            logger.warning(f"Server error {response.status}, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})")
+                            await asyncio.sleep(wait_time)
+                            continue
+                        error_text = await response.text()
+                        logger.error(f"FACEIT API server error {response.status}: {error_text}")
+                        raise FaceitAPIError(f"Server error: {response.status}")
                     elif response.status >= 400:
                         error_text = await response.text()
                         logger.error(f"FACEIT API error {response.status}: {error_text}")
                         raise FaceitAPIError(f"API request failed: {response.status}")
                     
                     return await response.json()
-        except aiohttp.ClientError as e:
-            logger.error(f"HTTP client error: {e}")
-            raise FaceitAPIError(f"Network error: {e}")
+                    
+            except aiohttp.ClientError as e:
+                if attempt < max_retries - 1:
+                    wait_time = (2 ** attempt) * 1
+                    logger.warning(f"Client error {e}, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})")
+                    await asyncio.sleep(wait_time)
+                    continue
+                logger.error(f"HTTP client error: {e}")
+                raise FaceitAPIError(f"Network error: {e}")
+        
+        raise FaceitAPIError("Max retries exceeded")
 
     async def search_player(self, nickname: str) -> Optional[FaceitPlayer]:
         """Search player by nickname."""

@@ -1,23 +1,39 @@
-"""Administrative utilities for subscription management."""
+"""Administrative utilities for user management."""
 
 import logging
+import os
 from typing import List, Dict, Any
 from datetime import datetime, timedelta
 
-from utils.storage import storage, SubscriptionTier, UserData
-from utils.subscription import SubscriptionManager
+from utils.storage import storage, UserData
 
 logger = logging.getLogger(__name__)
 
-# Admin user IDs (configure these based on your needs)
-ADMIN_USER_IDS = [
-    # Add your Telegram user ID here
-    # 123456789,  # Replace with actual admin user ID
-]
+# Admin user IDs loaded from environment variables
+def get_admin_user_ids() -> List[int]:
+    """Get admin user IDs from environment variable."""
+    admin_ids_str = os.getenv("ADMIN_USER_IDS", "")
+    if not admin_ids_str.strip():
+        logger.warning("⚠️ No admin user IDs configured. Admin features will be disabled.")
+        return []
+    
+    try:
+        admin_ids = [
+            int(uid.strip()) 
+            for uid in admin_ids_str.split(",") 
+            if uid.strip().isdigit()
+        ]
+        logger.info(f"✅ Loaded {len(admin_ids)} admin user IDs from environment")
+        return admin_ids
+    except Exception as e:
+        logger.error(f"❌ Error parsing admin user IDs: {e}")
+        return []
+
+ADMIN_USER_IDS = get_admin_user_ids()
 
 
 class AdminManager:
-    """Administrative tools for managing subscriptions and users."""
+    """Administrative tools for managing users."""
     
     @staticmethod
     def is_admin(user_id: int) -> bool:
@@ -27,14 +43,8 @@ class AdminManager:
     @staticmethod
     async def get_system_stats() -> Dict[str, Any]:
         """Get comprehensive system statistics."""
-        subscription_stats = await storage.get_subscription_stats()
+        user_stats = await storage.get_user_stats()
         all_users = await storage.get_all_users()
-        
-        # Revenue calculation (approximate)
-        monthly_revenue = (
-            subscription_stats["premium_users"] * 199 +
-            subscription_stats["pro_users"] * 299
-        )
         
         # Activity stats
         today = datetime.now().date()
@@ -46,54 +56,13 @@ class AdminManager:
                          if user.last_active_at and user.last_active_at.date() >= week_ago)
         
         return {
-            **subscription_stats,
-            "estimated_monthly_revenue_stars": monthly_revenue,
-            "estimated_monthly_revenue_usd": monthly_revenue * 0.1,  # Approximate Stars to USD
+            **user_stats,
             "active_today": active_today,
             "active_week": active_week,
-            "conversion_rate": round(
-                (subscription_stats["premium_users"] + subscription_stats["pro_users"]) / 
-                max(subscription_stats["total_users"], 1) * 100, 2
-            ),
             "avg_requests_per_user": round(
-                subscription_stats["daily_requests"] / max(subscription_stats["total_users"], 1), 2
+                user_stats["total_requests"] / max(user_stats["total_users"], 1), 2
             )
         }
-    
-    @staticmethod
-    async def grant_subscription(
-        user_id: int, 
-        tier: SubscriptionTier, 
-        days: int = 30,
-        admin_id: int = None
-    ) -> bool:
-        """Grant subscription to user (admin command)."""
-        success = await storage.upgrade_subscription(
-            user_id=user_id,
-            tier=tier,
-            duration_days=days,
-            payment_method="admin_grant"
-        )
-        
-        if success:
-            logger.info(f"Admin {admin_id} granted {tier} for {days} days to user {user_id}")
-        
-        return success
-    
-    @staticmethod
-    async def revoke_subscription(user_id: int, admin_id: int = None) -> bool:
-        """Revoke user's subscription (admin command)."""
-        user = await storage.get_user(user_id)
-        if not user:
-            return False
-        
-        user.subscription.tier = SubscriptionTier.FREE
-        user.subscription.expires_at = None
-        user.subscription.auto_renew = False
-        
-        await storage.save_user(user)
-        logger.info(f"Admin {admin_id} revoked subscription for user {user_id}")
-        return True
     
     @staticmethod
     async def find_user_by_nickname(nickname: str) -> List[UserData]:
@@ -112,44 +81,11 @@ class AdminManager:
         return {
             "user_id": user.user_id,
             "faceit_nickname": user.faceit_nickname,
-            "subscription_tier": user.subscription.tier.value,
-            "subscription_expires": user.subscription.expires_at.isoformat() if user.subscription.expires_at else None,
-            "daily_requests": user.subscription.daily_requests,
             "total_requests": user.total_requests,
-            "referrals_count": user.subscription.referrals_count,
-            "referred_by": user.subscription.referred_by,
             "created_at": user.created_at.isoformat(),
-            "last_active": user.last_active_at.isoformat() if user.last_active_at else None
-        }
-    
-    @staticmethod
-    async def get_payment_analytics() -> Dict[str, Any]:
-        """Get payment and conversion analytics."""
-        all_users = await storage.get_all_users()
-        
-        # Referral analytics
-        referred_users = [user for user in all_users if user.subscription.referred_by]
-        referrer_users = [user for user in all_users if user.subscription.referrals_count > 0]
-        
-        # Subscription upgrade patterns
-        premium_users = [user for user in all_users if user.subscription.tier == SubscriptionTier.PREMIUM]
-        pro_users = [user for user in all_users if user.subscription.tier == SubscriptionTier.PRO]
-        
-        return {
-            "referral_stats": {
-                "total_referred": len(referred_users),
-                "total_referrers": len(referrer_users),
-                "avg_referrals_per_referrer": round(
-                    sum(user.subscription.referrals_count for user in referrer_users) / 
-                    max(len(referrer_users), 1), 2
-                )
-            },
-            "subscription_patterns": {
-                "premium_count": len(premium_users),
-                "pro_count": len(pro_users),
-                "premium_with_referrals": len([u for u in premium_users if u.subscription.referred_by]),
-                "pro_with_referrals": len([u for u in pro_users if u.subscription.referred_by])
-            }
+            "last_active": user.last_active_at.isoformat() if user.last_active_at else None,
+            "notifications_enabled": user.notifications_enabled,
+            "language": user.language
         }
     
     @staticmethod
@@ -159,20 +95,15 @@ class AdminManager:
         
         message += f"👥 <b>Пользователи:</b>\n"
         message += f"• Всего: {stats['total_users']}\n"
-        message += f"• Free: {stats['free_users']}\n"
-        message += f"• Premium: {stats['premium_users']}\n"
-        message += f"• Pro: {stats['pro_users']}\n"
-        message += f"• Конверсия: {stats['conversion_rate']}%\n\n"
+        message += f"• Активные: {stats['active_users']}\n\n"
         
         message += f"📈 <b>Активность:</b>\n"
         message += f"• Сегодня: {stats['active_today']}\n"
         message += f"• За неделю: {stats['active_week']}\n"
-        message += f"• Запросов сегодня: {stats['daily_requests']}\n"
+        message += f"• Всего запросов: {stats['total_requests']}\n"
         message += f"• Среднее на пользователя: {stats['avg_requests_per_user']}\n\n"
         
-        message += f"💰 <b>Выручка (оценка):</b>\n"
-        message += f"• Месяц: {stats['estimated_monthly_revenue_stars']} ⭐\n"
-        message += f"• Месяц: ${stats['estimated_monthly_revenue_usd']:.2f}\n"
+        message += f"🎉 <b>Все функции бесплатны!</b>"
         
         return message
     
@@ -188,19 +119,9 @@ class AdminManager:
         if user_info['faceit_nickname']:
             message += f"🎮 <b>FACEIT:</b> {user_info['faceit_nickname']}\n"
         
-        message += f"💎 <b>Подписка:</b> {user_info['subscription_tier']}\n"
-        
-        if user_info['subscription_expires']:
-            expires = datetime.fromisoformat(user_info['subscription_expires'])
-            message += f"📅 <b>Истекает:</b> {expires.strftime('%d.%m.%Y %H:%M')}\n"
-        
-        message += f"📊 <b>Запросы:</b> {user_info['daily_requests']} сегодня, {user_info['total_requests']} всего\n"
-        
-        if user_info['referrals_count'] > 0:
-            message += f"👥 <b>Рефералы:</b> {user_info['referrals_count']}\n"
-        
-        if user_info['referred_by']:
-            message += f"🎁 <b>Приглашен:</b> {user_info['referred_by']}\n"
+        message += f"📊 <b>Всего запросов:</b> {user_info['total_requests']}\n"
+        message += f"🌐 <b>Язык:</b> {user_info['language']}\n"
+        message += f"🔔 <b>Уведомления:</b> {'✅' if user_info['notifications_enabled'] else '❌'}\n"
         
         created = datetime.fromisoformat(user_info['created_at'])
         message += f"📅 <b>Создан:</b> {created.strftime('%d.%m.%Y %H:%M')}\n"

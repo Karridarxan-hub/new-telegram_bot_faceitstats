@@ -60,24 +60,26 @@ class MatchAnalyzer:
     def parse_faceit_url(self, url: str) -> Optional[str]:
         """Extract match ID from FACEIT URL."""
         # FACEIT URLs can be in different formats:
-        # https://www.faceit.com/en/cs2/room/1-abc123-def456-ghi789
-        # https://www.faceit.com/en/cs2/room/abc123-def456-ghi789
-        # https://faceit.com/en/cs2/room/1-abc123-def456-ghi789
+        # https://www.faceit.com/en/cs2/room/1-abc12345-def6-7890-1234-567890abcdef
+        # https://www.faceit.com/en/cs2/room/abc12345-def6-7890-1234-567890abcdef
+        # https://faceit.com/en/cs2/room/1-abc12345-def6-7890-1234-567890abcdef
+        
+        # UUID pattern: 8-4-4-4-12 hexadecimal characters
+        uuid_pattern = r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}'
         
         patterns = [
-            r'faceit\.com/[^/]+/cs2/room/(?:1-)?([a-f0-9-]{36})',
-            r'faceit\.com/[^/]+/cs2/room/([a-f0-9-]+)',
-            r'room/([a-f0-9-]{36})',
-            r'room/1-([a-f0-9-]{36})',
+            # Standard FACEIT URL with optional 1- prefix
+            rf'faceit\.com/[^/]+/cs2/room/(?:1-)?({uuid_pattern})',
+            # Just the room part with optional 1- prefix
+            rf'room/(?:1-)?({uuid_pattern})',
+            # Any UUID in the URL (fallback)
+            rf'({uuid_pattern})',
         ]
         
         for pattern in patterns:
             match = re.search(pattern, url, re.IGNORECASE)
             if match:
                 match_id = match.group(1)
-                # Remove "1-" prefix if present
-                if match_id.startswith('1-'):
-                    match_id = match_id[2:]
                 logger.info(f"Extracted match ID: {match_id}")
                 return match_id
         

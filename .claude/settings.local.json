@@ -2,7 +2,22 @@
   "permissions": {
     "allow": [
       "Bash(python:*)",
-      "Bash(docker exec:*)"
+      "Bash(docker exec:*)",
+      "Bash(rm:*)",
+      "Bash(docker build:*)",
+      "Bash(docker-compose:*)",
+      "Bash(chcp:*)",
+      "Bash(set PYTHONIOENCODING=utf-8)",
+      "WebSearch",
+      "WebFetch(domain:faceitstats.com)",
+      "WebFetch(domain:leetify.com)",
+      "Bash(cloc:*)",
+      "Bash(PYTHONIOENCODING=utf-8 python -c \"\nimport asyncio\nimport logging\nlogging.basicConfig(level=logging.ERROR)  # Suppress debug logs\n\nfrom faceit.api import FaceitAPI\n\nasync def test_formatters():\n    try:\n        api = FaceitAPI()\n        player = await api.search_player(''Geun-Hee'')\n        if player:\n            stats = await api.get_player_stats(player.player_id, ''cs2'')\n            if stats:\n                # Test all formatters exist and run without errors\n                from utils.cs2_advanced_formatter import format_cs2_advanced_stats, format_weapon_stats, format_map_specific_progress\n                from utils.formatter_addon import format_player_playstyle\n                \n                advanced_stats = format_cs2_advanced_stats(player, stats)\n                weapon_stats = format_weapon_stats(stats)\n                map_progress = format_map_specific_progress(stats)\n                playstyle = format_player_playstyle(stats)\n                \n                print(''FORMATTER TEST RESULTS:'')\n                print(f''- Advanced CS2 Stats: {\"\"PASS\"\" if len(advanced_stats) > 0 else \"\"FAIL\"\"}'')\n                print(f''- Weapon Stats: {\"\"PASS\"\" if len(weapon_stats) > 0 else \"\"FAIL\"\"}'') \n                print(f''- Map Progress: {\"\"PASS\"\" if len(map_progress) > 0 else \"\"FAIL\"\"}'')\n                print(f''- Playstyle Analysis: {\"\"PASS\"\" if len(playstyle) > 0 else \"\"FAIL\"\"}'')\n                \n                print(''All advanced formatters are functional!'')\n            else:\n                print(''No stats available for testing'')\n        else:\n            print(''Player not found'')\n    except Exception as e:\n        print(f''Error: {e}'')\n        import traceback\n        traceback.print_exc()\n\nasyncio.run(test_formatters())\n\")",
+      "Bash(pip install:*)",
+      "Bash(grep:*)",
+      "Bash(cp:*)",
+      "Bash(pip uninstall:*)",
+      "Bash(dir:*)"
     ],
     "deny": [],
     "ask": []

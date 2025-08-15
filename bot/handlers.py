@@ -2,30 +2,28 @@
 
 import logging
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, PreCheckoutQuery, SuccessfulPayment
+from aiogram.types import Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command, CommandStart
 from aiogram.enums import ParseMode
 
 from faceit.api import FaceitAPI, FaceitAPIError
-from utils.storage import storage, UserData, SubscriptionTier
+from utils.storage import storage, UserData
 from utils.formatter import MessageFormatter
-from utils.subscription import SubscriptionManager, enforce_rate_limit, check_subscription_access
 from utils.admin import AdminManager
-from utils.payments import PaymentManager
 from utils.match_analyzer import MatchAnalyzer, format_match_analysis
 from queues.task_manager import get_task_manager, TaskPriority
 from bot.queue_handlers import handle_background_task_request
 from bot.progress import send_progress_message, create_progress_keyboard
 from utils.cache import get_cache_stats, clear_all_caches
 from config.version import get_version, get_build_info
+from utils.cs2_advanced_formatter import format_cs2_advanced_stats, format_weapon_stats, format_map_specific_progress
+from utils.formatter_addon import format_player_playstyle
 
 logger = logging.getLogger(__name__)
 
 router = Router()
 faceit_api = FaceitAPI()
 
-# Global payment manager (will be initialized when bot starts)
-payment_manager = None
 
 # Global match analyzer
 match_analyzer = MatchAnalyzer(faceit_api)
@@ -41,14 +39,41 @@ def get_main_menu():
             [KeyboardButton(text="📊 Моя статистика"), KeyboardButton(text="🎮 Последний матч")],
             [KeyboardButton(text="📋 История матчей"), KeyboardButton(text="👤 Профиль")],
             [KeyboardButton(text="📈 Анализ формы"), KeyboardButton(text="🔍 Найти игрока")],
-            [KeyboardButton(text="⚔️ Анализ матча"), KeyboardButton(text="💎 Подписка")],
-            [KeyboardButton(text="ℹ️ Помощь")]
+            [KeyboardButton(text="⚔️ Анализ матча"), KeyboardButton(text="ℹ️ Помощь")]
         ],
         resize_keyboard=True,
         one_time_keyboard=False
     )
     return keyboard
 
+
+def get_stats_menu():
+    """Get statistics menu with subdivisions."""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📊 Общая статистика", callback_data="stats_general"),
+            InlineKeyboardButton(text="📈 Детальная статистика", callback_data="stats_detailed")
+        ],
+        [
+            InlineKeyboardButton(text="🗺️ Карты", callback_data="stats_maps"),
+            InlineKeyboardButton(text="🔫 Оружие", callback_data="stats_weapons")
+        ],
+        [
+            InlineKeyboardButton(text="🎮 Матчи (10)", callback_data="stats_10"),
+            InlineKeyboardButton(text="🔥 Матчи (30)", callback_data="stats_30")
+        ],
+        [
+            InlineKeyboardButton(text="📅 Матчи (60)", callback_data="stats_60"),
+            InlineKeyboardButton(text="🎪 Сессии", callback_data="stats_sessions")
+        ],
+        [
+            InlineKeyboardButton(text="🎯 Стиль игры", callback_data="stats_playstyle")
+        ],
+        [
+            InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")
+        ]
+    ])
+    return keyboard
 
 def get_analysis_menu():
     """Get analysis period selection menu."""
@@ -75,36 +100,8 @@ def get_analysis_menu():
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
     """Handle /start command."""
-    # Check for referral code in command
-    referral_code = None
-    if message.text and len(message.text.split()) > 1:
-        referral_code = message.text.split()[1].strip()
-    
     # Check if user already has account linked
     user = await storage.get_user(message.from_user.id)
-    
-    # Handle referral if provided and user is new
-    if referral_code and (not user or not user.subscription.referred_by):
-        if not user:
-            user = UserData(user_id=message.from_user.id)
-            await storage.save_user(user)
-        
-        # Try to apply referral
-        success = await storage.apply_referral(message.from_user.id, referral_code)
-        if success:
-            await message.answer(
-                "🎉 <b>Поздравляем!</b>\n\n"
-                "✅ Реферальный код применен успешно!\n"
-                "🎁 Вы получили 7 дней Premium бесплатно!\n\n"
-                "Теперь привяжите свой FACEIT аккаунт:",
-                parse_mode=ParseMode.HTML
-            )
-        else:
-            await message.answer(
-                "⚠️ Неверный реферальный код или он уже был использован.\n\n"
-                "Привяжите свой FACEIT аккаунт:",
-                parse_mode=ParseMode.HTML
-            )
     
     if user and user.faceit_player_id:
         # User already linked, show main menu
@@ -161,21 +158,18 @@ async def menu_profile(message: Message) -> None:
 @router.message(F.text == "📊 Моя статистика")
 async def menu_stats(message: Message) -> None:
     """Handle stats menu."""
-    # Rate limit disabled - all functions free for now
     await cmd_stats(message)
 
 
 @router.message(F.text == "🎮 Последний матч")
 async def menu_last_match(message: Message) -> None:
     """Handle last match menu."""
-    # Rate limit disabled - all functions free for now
     await cmd_last_match(message)
 
 
 @router.message(F.text == "📋 История матчей")
 async def menu_matches(message: Message) -> None:
     """Handle matches history menu."""
-    # Rate limit disabled - all functions free for now
     await cmd_matches(message)
 
 
@@ -188,8 +182,6 @@ async def menu_help(message: Message) -> None:
 @router.message(F.text == "📈 Анализ формы")
 async def menu_analysis(message: Message) -> None:
     """Handle analysis menu."""
-    # Rate limit disabled - all functions free for now
-    
     user = await storage.get_user(message.from_user.id)
     if not user or not user.faceit_player_id:
         await message.answer(
@@ -226,36 +218,6 @@ async def menu_match_analysis(message: Message) -> None:
     )
 
 
-@router.message(F.text == "💎 Подписка")
-async def menu_subscription(message: Message) -> None:
-    """Handle subscription menu."""
-    user_id = message.from_user.id
-    
-    # Get or create user
-    user = await storage.get_user(user_id)
-    if not user:
-        user = UserData(user_id=user_id)
-        await storage.save_user(user)
-    
-    # Show subscription status
-    status_message = await SubscriptionManager.format_subscription_status(user_id)
-    
-    # Create inline keyboard for subscription actions
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="⭐ Купить Premium", callback_data="buy_premium"),
-                InlineKeyboardButton(text="💎 Купить Pro", callback_data="buy_pro")
-            ],
-            [
-                InlineKeyboardButton(text="🎁 Реферальный код", callback_data="referral_menu"),
-                InlineKeyboardButton(text="🔄 Обновить", callback_data="refresh_subscription")
-            ],
-            [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
-        ]
-    )
-    
-    await message.answer(status_message, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 
 
 @router.message(Command("setplayer"))
@@ -500,7 +462,7 @@ async def cmd_profile(message: Message) -> None:
         
         # Get player statistics and recent matches for streaks calculation
         player_stats = await faceit_api.get_player_stats(user.faceit_player_id)
-        recent_matches = await faceit_api.get_player_matches(user.faceit_player_id, limit=50)
+        recent_matches = await faceit_api.get_player_matches(user.faceit_player_id, limit=100)
         
         formatted_message = MessageFormatter.format_player_info(player, player_stats, recent_matches)
         await message.answer(formatted_message, parse_mode=ParseMode.HTML)
@@ -522,49 +484,23 @@ async def cmd_profile(message: Message) -> None:
 
 @router.message(Command("stats"))
 async def cmd_stats(message: Message) -> None:
-    """Handle /stats command."""
+    """Handle /stats command - show statistics menu."""
     user = await storage.get_user(message.from_user.id)
     if not user or not user.faceit_player_id:
         await message.answer(
-            "❌ Сначала привяжите свой FACEIT аккаунт командой /setplayer\n\nИли нажмите \"🔍 Найти игрока\" в меню.",
+            "❌ <b>Для просмотра статистики нужно привязать аккаунт</b>\n\n"
+            "Используйте команду /setplayer или нажмите \"🔍 Найти игрока\"",
             parse_mode=ParseMode.HTML,
             reply_markup=get_main_menu()
         )
         return
     
     await message.answer(
-        "🔍 Получаю детальную статистику...",
-        parse_mode=ParseMode.HTML
+        f"📊 <b>Статистика игрока {user.faceit_nickname}</b>\n\n"
+        "Выберите тип статистики:",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_stats_menu()
     )
-    
-    try:
-        player = await faceit_api.get_player_by_id(user.faceit_player_id)
-        player_stats = await faceit_api.get_player_stats(user.faceit_player_id)
-        recent_matches = await faceit_api.get_player_matches(user.faceit_player_id, limit=50)
-        
-        if not player:
-            await message.answer(
-                "❌ Не удалось получить информацию о профиле.",
-                parse_mode=ParseMode.HTML
-            )
-            return
-        
-        formatted_message = MessageFormatter.format_detailed_stats(player, player_stats, recent_matches)
-        await message.answer(formatted_message, parse_mode=ParseMode.HTML)
-        logger.info(f"Sent detailed stats to user {message.from_user.id}")
-        
-    except FaceitAPIError as e:
-        logger.error(f"FACEIT API error in stats: {e}")
-        await message.answer(
-            "❌ Произошла ошибка при получении статистики.",
-            parse_mode=ParseMode.HTML
-        )
-    except Exception as e:
-        logger.error(f"Unexpected error in stats: {e}")
-        await message.answer(
-            "❌ Произошла непредвиденная ошибка.",
-            parse_mode=ParseMode.HTML
-        )
 
 
 @router.message(Command("help"))
@@ -573,7 +509,7 @@ async def cmd_help(message: Message) -> None:
     help_text = """
 <b>🎮 FACEIT Stats Bot - Справка</b>
 
-<b>📋 Доступные команды:</b>
+<b>📋 Основные команды:</b>
 
 /start - начать работу с ботом
 /setplayer &lt;nickname&gt; - привязать FACEIT аккаунт  
@@ -581,42 +517,64 @@ async def cmd_help(message: Message) -> None:
 /stats - детальная статистика игрока
 /lastmatch - последний матч с подробностями
 /matches [число] - список последних матчей (макс. 20)
-/analyze &lt;ссылка&gt; - анализ матча перед игрой (фоновый)
-/my_tasks - показать активные задачи
+/analyze &lt;ссылка&gt; - анализ матча перед игрой
+/today - быстрый обзор за последние матчи
+/my_tasks - показать активные задачи анализа
 /cancel_task &lt;id&gt; - отменить задачу
-/subscription - управление подпиской
-/referral - реферальная программа
 /version - версия бота и информация о системе
 /help - показать эту справку
 
-<b>💎 Подписки:</b>
-• <b>Free:</b> 10 запросов/день, 5 матчей истории
-• <b>Premium:</b> 1000 запросов/день, расширенная аналитика
-• <b>Pro:</b> Безлимит, API доступ, командные функции
+<b>💎 Подписки и лимиты:</b>
 
-<b>🔔 Автоматические уведомления:</b>
-Бот отправляет уведомления о новых завершенных матчах с детальной статистикой (Premium+).
+<b>🆓 FREE (бесплатно):</b>
+• 10 запросов в день
+• История до 20 матчей
+• Базовая аналитика
+• Уведомления
 
-<b>⚡ Фоновая обработка:</b>
-Анализ матчей теперь выполняется в фоне, что позволяет боту оставаться отзывчивым во время обработки.
+<b>⭐ PREMIUM (199 ⭐/мес):</b>
+• 100 запросов в день
+• История до 50 матчей
+• Продвинутая аналитика
+• API доступ
+
+<b>🚀 PRO (299 ⭐/мес):</b>
+• Неограниченные запросы
+• История до 200 матчей
+• Полная аналитика
+• Приоритетная поддержка
+
+<b>⚡ Возможности бота:</b>
+• Анализ статистики игроков CS2
+• Предматчевый анализ противников
+• Анализ карт и стиля игры
+• Отслеживание формы и прогресса
+• Фоновая обработка запросов
 
 <b>💡 Примеры использования:</b>
 <code>/setplayer s1mple</code>
 <code>/stats</code> - полная статистика
 <code>/matches 10</code> - последние 10 матчей
-<code>/analyze https://faceit.com/en/cs2/room/1-abc-def</code> - анализ матча
+<code>/analyze https://faceit.com/en/cs2/room/1-abc-def</code>
 
-Также можете просто написать никнейм игрока (например: <code>s1mple</code>) или просто вставить ссылку на матч FACEIT для автоматического анализа.
+Также можете просто написать никнейм игрока или вставить ссылку на матч FACEIT для автоматического анализа.
 
 <b>🔧 Управление задачами:</b>
-• /my_tasks - посмотреть свои активные задачи
-• Используйте кнопки в сообщениях о прогрессе
-• /cancel_task <id> - отменить задачу
+• /my_tasks - активные задачи анализа
+• Кнопки отмены в сообщениях прогресса
+• /cancel_task &lt;id&gt; - отменить конкретную задачу
 
-<b>🆘 Поддержка:</b> Если есть вопросы или предложения, обратитесь к разработчику.
+<b>🆘 Поддержка:</b> Если есть вопросы, обратитесь к разработчику.
 """
     
-    await message.answer(help_text, parse_mode=ParseMode.HTML, reply_markup=get_main_menu())
+    # Create help keyboard with back button
+    help_keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Назад к главному меню", callback_data="back_to_menu")]
+        ]
+    )
+    
+    await message.answer(help_text, parse_mode=ParseMode.HTML, reply_markup=help_keyboard)
 
 
 @router.message(Command("version"))
@@ -641,9 +599,8 @@ async def cmd_version(message: Message) -> None:
 <b>⚡ Возможности:</b>
 • Анализ статистики игроков CS2
 • Предматчевый анализ
-• Система подписок с Telegram Stars
-• Реферальная программа
 • Автоматический мониторинг матчей
+• Полностью бесплатные функции
 
 <b>🏗️ Компоненты:</b>
 • Bot Engine: aiogram 3.x
@@ -657,34 +614,6 @@ async def cmd_version(message: Message) -> None:
     await message.answer(version_text, parse_mode=ParseMode.HTML, reply_markup=get_main_menu())
 
 
-@router.message(Command("subscription"))
-async def cmd_subscription(message: Message) -> None:
-    """Handle /subscription command."""
-    await menu_subscription(message)
-
-
-@router.message(Command("referral"))
-async def cmd_referral(message: Message) -> None:
-    """Handle /referral command."""
-    user_id = message.from_user.id
-    user = await storage.get_user(user_id)
-    
-    # Generate referral code if user doesn't have one
-    if not user or not user.subscription.referral_code:
-        await storage.generate_referral_code(user_id)
-        user = await storage.get_user(user_id)
-    
-    message_text = "🎁 <b>Реферальная программа</b>\n\n"
-    message_text += f"👥 <b>Ваш код:</b> <code>{user.subscription.referral_code}</code>\n"
-    message_text += f"🎯 <b>Приглашено друзей:</b> {user.subscription.referrals_count}\n\n"
-    message_text += "💰 <b>Условия:</b>\n"
-    message_text += "• Друг получает 7 дней Premium бесплатно\n"
-    message_text += "• Вы получаете 30 дней Premium за каждого друга\n"
-    message_text += "• Ваш друг должен использовать код при первом запуске\n\n"
-    message_text += "📤 <b>Как пригласить:</b>\n"
-    message_text += f"Отправьте другу ссылку: https://t.me/faceit_stats_bot?start={user.subscription.referral_code}"
-    
-    await message.answer(message_text, parse_mode=ParseMode.HTML, reply_markup=get_main_menu())
 
 
 @router.message(Command("analyze"))
@@ -796,7 +725,7 @@ async def cmd_today(message: Message) -> None:
         player = await faceit_api.get_player_by_id(user.faceit_player_id)
         
         # Get recent matches (last 20 for quick overview)
-        matches = await faceit_api.get_player_matches(user.faceit_player_id, limit=20)
+        matches = await faceit_api.get_player_matches(user.faceit_player_id, limit=50)
         finished_matches = [m for m in matches if m.status.upper() == "FINISHED"]
         
         if not finished_matches:
@@ -876,9 +805,9 @@ async def handle_analysis_callback(callback: CallbackQuery) -> None:
         
         try:
             player = await faceit_api.get_player_by_id(user.faceit_player_id)
-            matches_10 = await faceit_api.get_player_matches(user.faceit_player_id, limit=50)
-            matches_30 = await faceit_api.get_player_matches(user.faceit_player_id, limit=100) 
-            matches_60 = await faceit_api.get_player_matches(user.faceit_player_id, limit=200)
+            matches_10 = await faceit_api.get_player_matches(user.faceit_player_id, limit=100)
+            matches_30 = await faceit_api.get_player_matches(user.faceit_player_id, limit=200) 
+            matches_60 = await faceit_api.get_player_matches(user.faceit_player_id, limit=300)
             
             # Используем новый анализ с клатч статистикой для первого периода
             formatted_message = await MessageFormatter.format_period_analysis_with_api(
@@ -929,14 +858,26 @@ async def handle_maps_analysis(callback: CallbackQuery) -> None:
         player = await faceit_api.get_player_by_id(user.faceit_player_id)
         
         formatted_message = await MessageFormatter.format_map_analysis(
-            player, faceit_api, limit=100
+            player, faceit_api, limit=200
         )
         
-        await callback.message.edit_text(formatted_message, parse_mode=ParseMode.HTML)
+        # Добавляем кнопку назад
+        back_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Назад к анализу", callback_data="analysis_menu")]
+        ])
+        
+        await callback.message.edit_text(formatted_message, parse_mode=ParseMode.HTML, reply_markup=back_keyboard)
         
     except Exception as e:
         logger.error(f"Error in maps analysis callback: {e}")
-        await callback.message.edit_text(f"❌ Произошла ошибка при анализе карт: {str(e)}", parse_mode=ParseMode.HTML)
+        back_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Назад к анализу", callback_data="analysis_menu")]
+        ])
+        await callback.message.edit_text(
+            f"❌ Произошла ошибка при анализе карт: {str(e)}", 
+            parse_mode=ParseMode.HTML,
+            reply_markup=back_keyboard
+        )
 
 
 @router.callback_query(F.data == "today_summary")
@@ -958,7 +899,7 @@ async def handle_today_summary(callback: CallbackQuery) -> None:
         player = await faceit_api.get_player_by_id(user.faceit_player_id)
         
         # Get recent matches for summary
-        matches_with_stats = await faceit_api.get_matches_with_stats(user.faceit_player_id, limit=30)
+        matches_with_stats = await faceit_api.get_matches_with_stats(user.faceit_player_id, limit=100)
         
         if not matches_with_stats:
             await callback.message.edit_text("❌ Матчи не найдены", parse_mode=ParseMode.HTML)
@@ -988,11 +929,23 @@ async def handle_today_summary(callback: CallbackQuery) -> None:
         message_text += f"🔥 <b>Clutch:</b> {current_stats['clutch_success']}% ({current_stats['clutch_attempts']})\n"
         message_text += f"📊 <b>Форма:</b> {' '.join(recent_results)}\n"
         
-        await callback.message.edit_text(message_text, parse_mode=ParseMode.HTML)
+        # Добавляем кнопку назад
+        back_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Назад к анализу", callback_data="analysis_menu")]
+        ])
+        
+        await callback.message.edit_text(message_text, parse_mode=ParseMode.HTML, reply_markup=back_keyboard)
         
     except Exception as e:
         logger.error(f"Error in today summary callback: {e}")
-        await callback.message.edit_text(f"❌ Произошла ошибка: {str(e)}", parse_mode=ParseMode.HTML)
+        back_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Назад к анализу", callback_data="analysis_menu")]
+        ])
+        await callback.message.edit_text(
+            f"❌ Произошла ошибка: {str(e)}", 
+            parse_mode=ParseMode.HTML,
+            reply_markup=back_keyboard
+        )
 
 
 @router.callback_query(F.data == "sessions_analysis")
@@ -1014,15 +967,43 @@ async def handle_sessions_analysis(callback: CallbackQuery) -> None:
         player = await faceit_api.get_player_by_id(user.faceit_player_id)
         
         formatted_message = await MessageFormatter.format_sessions_analysis(
-            player, faceit_api, limit=100
+            player, faceit_api, limit=200
         )
         
-        await callback.message.edit_text(formatted_message, parse_mode=ParseMode.HTML)
+        # Создаем клавиатуру с кнопкой "Назад"
+        back_keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 Назад к анализу", callback_data="analysis_menu")]
+            ]
+        )
+        
+        await callback.message.edit_text(
+            formatted_message, 
+            parse_mode=ParseMode.HTML,
+            reply_markup=back_keyboard
+        )
         
     except Exception as e:
         logger.error(f"Error in sessions analysis callback: {e}")
-        await callback.message.edit_text(f"❌ Произошла ошибка при анализе сессий: {str(e)}", parse_mode=ParseMode.HTML)
+        back_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Назад к анализу", callback_data="analysis_menu")]
+        ])
+        await callback.message.edit_text(
+            f"❌ Произошла ошибка при анализе сессий: {str(e)}", 
+            parse_mode=ParseMode.HTML,
+            reply_markup=back_keyboard
+        )
 
+
+@router.callback_query(F.data == "analysis_menu")
+async def handle_analysis_menu(callback: CallbackQuery) -> None:
+    """Handle analysis menu callback."""
+    await callback.answer()
+    await callback.message.edit_text(
+        "📊 <b>Меню анализа</b>\n\nВыберите тип анализа:",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_analysis_menu()
+    )
 
 @router.callback_query(F.data == "back_to_menu")
 async def handle_back_to_menu(callback: CallbackQuery) -> None:
@@ -1035,189 +1016,17 @@ async def handle_back_to_menu(callback: CallbackQuery) -> None:
     )
 
 
-# Subscription callback handlers
-@router.callback_query(F.data == "buy_premium")
-async def handle_buy_premium(callback: CallbackQuery) -> None:
-    """Handle premium subscription purchase."""
+@router.callback_query(F.data == "back_to_main")
+async def handle_back_to_main(callback: CallbackQuery) -> None:
+    """Handle back to main stats menu callback."""
     await callback.answer()
-    
-    # Create subscription purchase menu
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="⭐ Premium месяц - 199 ⭐", callback_data="purchase_premium_monthly"),
-                InlineKeyboardButton(text="⭐ Premium год - 1999 ⭐", callback_data="purchase_premium_yearly")
-            ],
-            [InlineKeyboardButton(text="🔙 Назад", callback_data="refresh_subscription")]
-        ]
-    )
-    
-    upgrade_message = await SubscriptionManager.format_upgrade_options(callback.from_user.id)
-    
     await callback.message.edit_text(
-        "⭐ <b>Premium подписка</b>\n\n" + upgrade_message,
+        "📊 <b>Статистика</b>\n\nВыберите раздел:",
         parse_mode=ParseMode.HTML,
-        reply_markup=keyboard
+        reply_markup=get_stats_menu()
     )
 
 
-@router.callback_query(F.data == "buy_pro") 
-async def handle_buy_pro(callback: CallbackQuery) -> None:
-    """Handle pro subscription purchase."""
-    await callback.answer()
-    
-    # Create subscription purchase menu
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="💎 Pro месяц - 299 ⭐", callback_data="purchase_pro_monthly"),
-                InlineKeyboardButton(text="💎 Pro год - 2999 ⭐", callback_data="purchase_pro_yearly")
-            ],
-            [InlineKeyboardButton(text="🔙 Назад", callback_data="refresh_subscription")]
-        ]
-    )
-    
-    upgrade_message = await SubscriptionManager.format_upgrade_options(callback.from_user.id)
-    
-    await callback.message.edit_text(
-        "💎 <b>Pro подписка</b>\n\n" + upgrade_message,
-        parse_mode=ParseMode.HTML,
-        reply_markup=keyboard
-    )
-
-
-@router.callback_query(F.data == "referral_menu")
-async def handle_referral_menu(callback: CallbackQuery) -> None:
-    """Handle referral menu."""
-    await callback.answer()
-    
-    user_id = callback.from_user.id
-    user = await storage.get_user(user_id)
-    
-    # Generate referral code if user doesn't have one
-    if not user or not user.subscription.referral_code:
-        await storage.generate_referral_code(user_id)
-        user = await storage.get_user(user_id)
-    
-    message = "🎁 <b>Реферальная программа</b>\n\n"
-    message += f"👥 <b>Ваш код:</b> <code>{user.subscription.referral_code}</code>\n"
-    message += f"🎯 <b>Приглашено друзей:</b> {user.subscription.referrals_count}\n\n"
-    message += "💰 <b>Условия:</b>\n"
-    message += "• Друг получает 7 дней Premium бесплатно\n"
-    message += "• Вы получаете 30 дней Premium за каждого друга\n"
-    message += "• Ваш друг должен использовать код при первом запуске\n\n"
-    message += "📤 <b>Как пригласить:</b>\n"
-    message += f"Отправьте другу: <code>/start {user.subscription.referral_code}</code>"
-    
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🔙 Назад", callback_data="refresh_subscription")]
-        ]
-    )
-    
-    await callback.message.edit_text(message, parse_mode=ParseMode.HTML, reply_markup=keyboard)
-
-
-@router.callback_query(F.data == "refresh_subscription")
-async def handle_refresh_subscription(callback: CallbackQuery) -> None:
-    """Handle subscription refresh."""
-    await callback.answer()
-    
-    user_id = callback.from_user.id
-    status_message = await SubscriptionManager.format_subscription_status(user_id)
-    
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="⭐ Купить Premium", callback_data="buy_premium"),
-                InlineKeyboardButton(text="💎 Купить Pro", callback_data="buy_pro")
-            ],
-            [
-                InlineKeyboardButton(text="🎁 Реферальный код", callback_data="referral_menu"),
-                InlineKeyboardButton(text="🔄 Обновить", callback_data="refresh_subscription")
-            ],
-            [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
-        ]
-    )
-    
-    await callback.message.edit_text(status_message, parse_mode=ParseMode.HTML, reply_markup=keyboard)
-
-
-# Purchase handlers with Telegram Stars integration
-@router.callback_query(F.data.startswith("purchase_"))
-async def handle_purchase(callback: CallbackQuery) -> None:
-    """Handle subscription purchase."""
-    await callback.answer()
-    
-    # Parse purchase data
-    parts = callback.data.split("_")
-    if len(parts) != 3:
-        await callback.message.answer("❌ Ошибка в данных покупки")
-        return
-    
-    _, tier_name, duration = parts
-    tier = SubscriptionTier.PREMIUM if tier_name == "premium" else SubscriptionTier.PRO
-    
-    try:
-        if payment_manager is None:
-            # Fallback if payment manager not initialized
-            invoice_data = await SubscriptionManager.create_payment_invoice(
-                callback.from_user.id, tier, duration
-            )
-            
-            message = f"💳 <b>Оплата {invoice_data['title']}</b>\n\n"
-            message += f"💰 <b>Стоимость:</b> {invoice_data['prices'][0]['amount']} ⭐\n\n"
-            message += "🚧 <b>Платежная система временно недоступна!</b>\n\n"
-            message += "Обратитесь к администратору для активации подписки."
-            
-            keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(text="🔙 Назад", callback_data="refresh_subscription")]
-                ]
-            )
-            
-            await callback.message.edit_text(message, parse_mode=ParseMode.HTML, reply_markup=keyboard)
-            return
-        
-        # Create and send invoice using Telegram Stars
-        result = await payment_manager.create_invoice(
-            callback.from_user.id, tier, duration
-        )
-        
-        if result["success"]:
-            # Invoice sent successfully
-            await callback.message.edit_text(
-                "💳 <b>Счет для оплаты отправлен!</b>\n\n"
-                "Проверьте сообщения выше для завершения оплаты через Telegram Stars.",
-                parse_mode=ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [InlineKeyboardButton(text="🔙 Назад", callback_data="refresh_subscription")]
-                    ]
-                )
-            )
-        else:
-            # Error creating invoice
-            await callback.message.edit_text(
-                f"❌ <b>Ошибка при создании счета</b>\n\n{result.get('error', 'Неизвестная ошибка')}",
-                parse_mode=ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [InlineKeyboardButton(text="🔙 Назад", callback_data="refresh_subscription")]
-                    ]
-                )
-            )
-        
-    except Exception as e:
-        logger.error(f"Error in purchase handler: {e}")
-        await callback.message.edit_text(
-            "❌ Произошла ошибка при обработке покупки. Попробуйте позже.",
-            reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(text="🔙 Назад", callback_data="refresh_subscription")]
-                ]
-            )
-        )
 
 
 # Administrative commands
@@ -1237,52 +1046,6 @@ async def cmd_admin_stats(message: Message) -> None:
         await message.answer("❌ Ошибка при получении статистики")
 
 
-@router.message(Command("admin_grant"))
-async def cmd_admin_grant(message: Message) -> None:
-    """Admin command: Grant subscription to user."""
-    if not AdminManager.is_admin(message.from_user.id):
-        await message.answer("❌ Недостаточно прав доступа")
-        return
-    
-    if not message.text:
-        return
-    
-    args = message.text.split()[1:]
-    if len(args) < 2:
-        await message.answer(
-            "Использование: /admin_grant <user_id> <tier> [days]\n"
-            "Пример: /admin_grant 123456789 premium 30",
-            parse_mode=ParseMode.HTML
-        )
-        return
-    
-    try:
-        user_id = int(args[0])
-        tier_str = args[1].lower()
-        days = int(args[2]) if len(args) > 2 else 30
-        
-        if tier_str == "premium":
-            tier = SubscriptionTier.PREMIUM
-        elif tier_str == "pro":
-            tier = SubscriptionTier.PRO
-        else:
-            await message.answer("❌ Неверный тариф. Используйте: premium или pro")
-            return
-        
-        success = await AdminManager.grant_subscription(
-            user_id, tier, days, message.from_user.id
-        )
-        
-        if success:
-            await message.answer(f"✅ Пользователю {user_id} выдана подписка {tier.value} на {days} дней")
-        else:
-            await message.answer("❌ Не удалось выдать подписку")
-            
-    except ValueError:
-        await message.answer("❌ Неверный формат команды")
-    except Exception as e:
-        logger.error(f"Error granting subscription: {e}")
-        await message.answer("❌ Ошибка при выдаче подписки")
 
 
 @router.message(Command("admin_user"))
@@ -1317,39 +1080,6 @@ async def cmd_admin_user(message: Message) -> None:
         await message.answer("❌ Ошибка при получении информации о пользователе")
 
 
-@router.message(Command("admin_revoke"))
-async def cmd_admin_revoke(message: Message) -> None:
-    """Admin command: Revoke user subscription."""
-    if not AdminManager.is_admin(message.from_user.id):
-        await message.answer("❌ Недостаточно прав доступа")
-        return
-    
-    if not message.text:
-        return
-    
-    args = message.text.split()[1:]
-    if len(args) < 1:
-        await message.answer(
-            "Использование: /admin_revoke <user_id>\n"
-            "Пример: /admin_revoke 123456789",
-            parse_mode=ParseMode.HTML
-        )
-        return
-    
-    try:
-        user_id = int(args[0])
-        success = await AdminManager.revoke_subscription(user_id, message.from_user.id)
-        
-        if success:
-            await message.answer(f"✅ Подписка пользователя {user_id} отозвана")
-        else:
-            await message.answer("❌ Пользователь не найден")
-            
-    except ValueError:
-        await message.answer("❌ Неверный формат user_id")
-    except Exception as e:
-        logger.error(f"Error revoking subscription: {e}")
-        await message.answer("❌ Ошибка при отзыве подписки")
 
 
 @router.message(Command("admin_cache"))
@@ -1534,45 +1264,6 @@ async def cmd_cancel_task(message: Message) -> None:
         )
 
 
-# Payment handlers
-@router.pre_checkout_query()
-async def handle_pre_checkout_query(pre_checkout_query: PreCheckoutQuery) -> None:
-    """Handle pre-checkout query for payment validation."""
-    if payment_manager is None:
-        await pre_checkout_query.answer(
-            ok=False,
-            error_message="Платежная система временно недоступна"
-        )
-        return
-    
-    await payment_manager.handle_pre_checkout_query(pre_checkout_query)
-
-
-@router.message(F.successful_payment)
-async def handle_successful_payment(message: Message) -> None:
-    """Handle successful payment and upgrade subscription."""
-    if payment_manager is None:
-        await message.answer("❌ Ошибка: платежная система недоступна")
-        return
-    
-    success = await payment_manager.handle_successful_payment(
-        message.from_user.id, 
-        message.successful_payment
-    )
-    
-    if not success:
-        await message.answer(
-            "❌ Произошла ошибка при активации подписки. "
-            "Обратитесь в поддержку если проблема сохраняется."
-        )
-
-
-# Function to initialize payment manager (called from bot.py)
-def init_payment_manager(bot):
-    """Initialize payment manager with bot instance."""
-    global payment_manager
-    payment_manager = PaymentManager(bot)
-    logger.info("Payment manager initialized")
 
 
 async def _fallback_analyze_match(message: Message, match_url: str) -> None:
@@ -1637,19 +1328,6 @@ async def _fallback_analyze_match(message: Message, match_url: str) -> None:
         )
 
 
-async def _check_user_rate_limits(user_id: int) -> bool:
-    """Check if user can perform another operation within rate limits."""
-    try:
-        user = await storage.get_user(user_id)
-        if not user:
-            return True  # Allow new users
-        
-        # For now, simple time-based rate limiting
-        # In production, this would use proper rate limiting logic
-        return True
-    except Exception as e:
-        logger.error(f"Error checking rate limits for user {user_id}: {e}")
-        return True  # Allow on error
 
 
 # Handle any other text
@@ -1660,15 +1338,7 @@ async def handle_text(message: Message) -> None:
     
     # Check if message contains FACEIT match URL
     if message.text and 'faceit.com' in message.text.lower() and '/room/' in message.text.lower():
-        # Check rate limits before processing
-        if await _check_user_rate_limits(message.from_user.id):
-            await analyze_match_from_url(message, message.text.strip())
-        else:
-            await message.answer(
-                "⚠️ <b>Превышен лимит запросов</b>\n\n"
-                "Пожалуйста, подождите перед следующим анализом матча.",
-                parse_mode=ParseMode.HTML
-            )
+        await analyze_match_from_url(message, message.text.strip())
         return
     
     # Check if user is waiting for nickname
@@ -1728,4 +1398,343 @@ async def handle_text(message: Message) -> None:
             "🤔 Не понимаю команду. Используйте меню ниже или /help для справки.",
             parse_mode=ParseMode.HTML,
             reply_markup=get_main_menu()
+        )
+
+
+# ==================== STATISTICS CALLBACK HANDLERS ====================
+
+@router.callback_query(F.data == "my_stats")
+async def callback_my_stats(callback: CallbackQuery):
+    """Handle my stats callback - show statistics menu."""
+    await callback.answer()
+    
+    user = await storage.get_user(callback.from_user.id)
+    if not user or not user.faceit_player_id:
+        await callback.message.edit_text(
+            "❌ <b>Для просмотра статистики нужно привязать аккаунт</b>\n\n"
+            "Используйте команду /setplayer",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    await callback.message.edit_text(
+        f"📊 <b>Статистика игрока {user.faceit_nickname}</b>\n\n"
+        "Выберите тип статистики:",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_stats_menu()
+    )
+
+@router.callback_query(F.data == "stats_general")
+async def callback_stats_general(callback: CallbackQuery):
+    """Handle general statistics callback."""
+    await callback.answer()
+    
+    user = await storage.get_user(callback.from_user.id)
+    if not user or not user.faceit_player_id:
+        await callback.message.edit_text(
+            "❌ <b>Для просмотра статистики нужно привязать аккаунт</b>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    try:
+        await callback.message.edit_text("📊 Получаю общую статистику...", parse_mode=ParseMode.HTML)
+        
+        player = await faceit_api.get_player_by_id(user.faceit_player_id)
+        stats = await faceit_api.get_player_stats(user.faceit_player_id, "cs2")
+        
+        if not player or not stats:
+            await callback.message.edit_text("❌ Статистика недоступна", parse_mode=ParseMode.HTML)
+            return
+        
+        general_text = MessageFormatter.format_player_stats(player, stats)
+        
+        await callback.message.edit_text(
+            general_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 К статистике", callback_data="my_stats")]
+            ])
+        )
+    except Exception as e:
+        logger.error(f"Error showing general stats: {e}")
+        await callback.message.edit_text(
+            "❌ Ошибка при загрузке общей статистики",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 К статистике", callback_data="my_stats")]
+            ])
+        )
+
+@router.callback_query(F.data == "stats_detailed")
+async def callback_stats_detailed(callback: CallbackQuery):
+    """Handle detailed statistics callback."""
+    await callback.answer()
+    
+    user = await storage.get_user(callback.from_user.id)
+    if not user or not user.faceit_player_id:
+        await callback.message.edit_text(
+            "❌ <b>Для просмотра статистики нужно привязать аккаунт</b>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    try:
+        await callback.message.edit_text("📈 Получаю детальную статистику...", parse_mode=ParseMode.HTML)
+        
+        stats = await faceit_api.get_player_stats(user.faceit_player_id, "cs2")
+        
+        if not stats:
+            await callback.message.edit_text("❌ Статистика недоступна", parse_mode=ParseMode.HTML)
+            return
+        
+        # Get player info for advanced stats
+        player = await faceit_api.get_player_by_id(user.faceit_player_id)
+        if not player:
+            await callback.message.edit_text("❌ Игрок не найден", parse_mode=ParseMode.HTML)
+            return
+            
+        # Use advanced CS2 formatter
+        detailed_text = format_cs2_advanced_stats(player, stats)
+        
+        await callback.message.edit_text(
+            detailed_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 К статистике", callback_data="my_stats")]
+            ])
+        )
+    except Exception as e:
+        logger.error(f"Error showing detailed stats: {e}")
+        await callback.message.edit_text(
+            "❌ Ошибка при загрузке детальной статистики",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 К статистике", callback_data="my_stats")]
+            ])
+        )
+
+@router.callback_query(F.data == "stats_maps")
+async def callback_stats_maps(callback: CallbackQuery):
+    """Handle map statistics callback with real per-map analysis."""
+    await callback.answer()
+    
+    user = await storage.get_user(callback.from_user.id)
+    if not user or not user.faceit_player_id:
+        await callback.message.edit_text(
+            "❌ <b>Для просмотра статистики нужно привязать аккаунт</b>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    try:
+        await callback.message.edit_text("🔍 Анализирую статистику по картам...", parse_mode=ParseMode.HTML)
+        
+        # Get player info for map analysis
+        player = await faceit_api.get_player_by_id(user.faceit_player_id)
+        if not player:
+            await callback.message.edit_text("❌ Игрок не найден", parse_mode=ParseMode.HTML)
+            return
+            
+        # Use proper map analysis from MessageFormatter with real match data
+        maps_text = await MessageFormatter.format_map_analysis(
+            player,
+            faceit_api,
+            limit=100  # Analyze last 100 matches for accurate map statistics
+        )
+        
+        await callback.message.edit_text(
+            maps_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 К статистике", callback_data="my_stats")]
+            ])
+        )
+    except Exception as e:
+        logger.error(f"Error showing map stats: {e}")
+        await callback.message.edit_text(
+            "❌ Ошибка при загрузке статистики карт",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 К статистике", callback_data="my_stats")]
+            ])
+        )
+
+@router.callback_query(F.data == "stats_sessions")
+async def callback_stats_sessions(callback: CallbackQuery):
+    """Handle session statistics callback with proper session analysis."""
+    await callback.answer()
+    
+    user = await storage.get_user(callback.from_user.id)
+    if not user or not user.faceit_player_id:
+        await callback.message.edit_text(
+            "❌ <b>Для просмотра статистики нужно привязать аккаунт</b>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    try:
+        # Show loading message
+        await callback.message.edit_text("🔍 Анализирую игровые сессии...", parse_mode=ParseMode.HTML)
+        
+        # Get player info for sessions analysis
+        player = await faceit_api.get_player_by_id(user.faceit_player_id)
+        if not player:
+            await callback.message.edit_text("❌ Игрок не найден", parse_mode=ParseMode.HTML)
+            return
+            
+        # Use proper sessions analysis from MessageFormatter with real match data  
+        sessions_text = await MessageFormatter.format_sessions_analysis(
+            player,
+            faceit_api,
+            limit=100  # Analyze last 100 matches for session grouping
+        )
+        
+        await callback.message.edit_text(
+            sessions_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 К статистике", callback_data="my_stats")]
+            ])
+        )
+    except Exception as e:
+        logger.error(f"Error showing session stats: {e}")
+        await callback.message.edit_text(
+            "❌ Ошибка при загрузке статистики сессий",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 К статистике", callback_data="my_stats")]
+            ])
+        )
+
+@router.callback_query(F.data == "stats_weapons")
+async def callback_stats_weapons(callback: CallbackQuery):
+    """Handle weapon statistics callback."""
+    await callback.answer()
+    
+    user = await storage.get_user(callback.from_user.id)
+    if not user or not user.faceit_player_id:
+        await callback.message.edit_text(
+            "❌ <b>Для просмотра статистики нужно привязать аккаунт</b>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    try:
+        await callback.message.edit_text("🔍 Анализирую статистику по оружию...", parse_mode=ParseMode.HTML)
+        
+        # Get player stats for weapon analysis
+        stats = await faceit_api.get_player_stats(user.faceit_player_id, "cs2")
+        if not stats:
+            await callback.message.edit_text("❌ Статистика недоступна", parse_mode=ParseMode.HTML)
+            return
+            
+        # Use weapon stats formatter
+        weapon_text = format_weapon_stats(stats)
+        
+        await callback.message.edit_text(
+            weapon_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 К статистике", callback_data="my_stats")]
+            ])
+        )
+    
+    except Exception as e:
+        logger.error(f"Error showing weapon stats: {e}")
+        await callback.message.edit_text(
+            "❌ Ошибка при загрузке статистики по оружию",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 К статистике", callback_data="my_stats")]
+            ])
+        )
+
+@router.callback_query(F.data.in_(["stats_10", "stats_30", "stats_60"]))
+async def callback_stats_matches(callback: CallbackQuery):
+    """Handle match statistics callback."""
+    await callback.answer()
+    
+    user = await storage.get_user(callback.from_user.id)
+    if not user or not user.faceit_player_id:
+        await callback.message.edit_text(
+            "❌ <b>Для просмотра статистики нужно привязать аккаунт</b>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    # Extract match count from callback data
+    match_count = int(callback.data.split("_")[1])
+    
+    try:
+        await callback.message.edit_text(
+            f"📊 Получаю статистику за последние {match_count} матчей...", 
+            parse_mode=ParseMode.HTML
+        )
+        
+        player = await faceit_api.get_player_by_id(user.faceit_player_id)
+        if not player:
+            await callback.message.edit_text("❌ Игрок не найден", parse_mode=ParseMode.HTML)
+            return
+        
+        # Get matches with statistics
+        matches_text = await MessageFormatter.format_recent_matches_analysis(
+            player, faceit_api, limit=match_count
+        )
+        
+        await callback.message.edit_text(
+            matches_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 К статистике", callback_data="my_stats")]
+            ])
+        )
+    except Exception as e:
+        logger.error(f"Error getting match statistics: {e}")
+        await callback.message.edit_text(
+            "❌ Ошибка при получении статистики матчей",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 К статистике", callback_data="my_stats")]
+            ])
+        )
+
+@router.callback_query(F.data == "stats_playstyle")
+async def callback_stats_playstyle(callback: CallbackQuery):
+    """Handle playstyle statistics callback."""
+    await callback.answer()
+    
+    user = await storage.get_user(callback.from_user.id)
+    if not user or not user.faceit_player_id:
+        await callback.message.edit_text(
+            "❌ <b>Для просмотра статистики нужно привязать аккаунт</b>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    try:
+        await callback.message.edit_text("🔍 Анализирую стиль игры...", parse_mode=ParseMode.HTML)
+        
+        stats = await faceit_api.get_player_stats(user.faceit_player_id, "cs2")
+        if not stats:
+            await callback.message.edit_text("❌ Статистика недоступна", parse_mode=ParseMode.HTML)
+            return
+            
+        playstyle_text = format_player_playstyle(stats)
+        
+        await callback.message.edit_text(
+            playstyle_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 К статистике", callback_data="my_stats")]
+            ])
+        )
+    except Exception as e:
+        logger.error(f"Error showing playstyle stats: {e}")
+        await callback.message.edit_text(
+            "❌ Ошибка при загрузке анализа стиля игры",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 К статистике", callback_data="my_stats")]
+            ])
         )

@@ -7,6 +7,7 @@ in the background to ensure timely delivery without blocking the main bot thread
 import logging
 import asyncio
 import json
+import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any, Union
 from dataclasses import dataclass, asdict
@@ -260,7 +261,7 @@ def send_bulk_notifications_task(
                         failed_sends += 1
                     
                     # Small delay between individual sends
-                    await asyncio.sleep(0.1)
+                    time.sleep(0.1)
                     
                 except Exception as e:
                     logger.error(f"Error sending notification to user {user_id}: {e}")
@@ -276,7 +277,7 @@ def send_bulk_notifications_task(
             
             # Delay between batches
             if i + batch_size < total_recipients:
-                await asyncio.sleep(delay_between_batches_ms / 1000)
+                time.sleep(delay_between_batches_ms / 1000)
         
         success_rate = round((successful_sends / total_recipients) * 100, 1)
         
@@ -944,7 +945,7 @@ async def _execute_broadcast(
                         failed_sends += 1
                     
                     # Small delay between individual sends
-                    await asyncio.sleep(0.1)
+                    time.sleep(0.1)
                     
                 except Exception as e:
                     logger.error(f"Error sending broadcast to user {user_id}: {e}")
@@ -952,7 +953,7 @@ async def _execute_broadcast(
             
             # Delay between batches
             if i + batch_size < len(target_user_ids):
-                await asyncio.sleep(delay_ms / 1000)
+                time.sleep(delay_ms / 1000)
         
         duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
         success_rate = round((successful_sends / len(target_user_ids)) * 100, 1)

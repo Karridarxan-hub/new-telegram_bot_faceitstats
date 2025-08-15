@@ -89,10 +89,8 @@ class TaskManager:
     
     def __init__(self, redis_connection: Optional[Redis] = None):
         """Initialize task manager."""
-        self.redis = redis_connection or Redis(
-            host=settings.redis_host,
-            port=settings.redis_port,
-            db=settings.redis_db_tasks or 1,
+        self.redis = redis_connection or Redis.from_url(
+            settings.redis_url,
             password=getattr(settings, 'redis_password', None)
         )
         

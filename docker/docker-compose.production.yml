@@ -1,0 +1,446 @@
+version: '3.8'
+
+services:
+  # Main Telegram Bot
+  faceit-bot:
+    image: ${DOCKER_REGISTRY:-your-dockerhub}/faceit-bot:${VERSION:-latest}
+    container_name: faceit-bot-production
+    restart: unless-stopped
+    env_file:
+      - ../.env.production
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_READ_URL=${DATABASE_READ_URL}
+      - ENVIRONMENT=production
+    command: python main.py
+    volumes:
+      - ../data:/app/data:ro
+      - ../logs:/app/logs
+      - ./health:/app/health
+    networks:
+      - faceit-network
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "8080:8080"  # Health check endpoint
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.75'
+        reservations:
+          memory: 256M
+          cpus: '0.5'
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # RQ Worker - Priority Tasks (Critical & High)
+  worker-priority:
+    image: ${DOCKER_REGISTRY:-your-dockerhub}/faceit-bot:${VERSION:-latest}
+    container_name: faceit-worker-priority
+    restart: unless-stopped
+    env_file:
+      - ../.env.production
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      - REDIS_URL=redis://redis:6379/1
+      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_READ_URL=${DATABASE_READ_URL}
+      - WORKER_TYPE=priority
+      - WORKER_NAME=priority-worker-1
+      - ENVIRONMENT=production
+    command: python worker.py
+    volumes:
+      - ../logs:/app/logs
+    networks:
+      - faceit-network
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.6'
+        reservations:
+          memory: 256M
+          cpus: '0.3'
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # RQ Worker - Default Tasks
+  worker-default:
+    image: ${DOCKER_REGISTRY:-your-dockerhub}/faceit-bot:${VERSION:-latest}
+    container_name: faceit-worker-default
+    restart: unless-stopped
+    env_file:
+      - ../.env.production
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      - REDIS_URL=redis://redis:6379/1
+      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_READ_URL=${DATABASE_READ_URL}
+      - WORKER_TYPE=default
+      - WORKER_NAME=default-worker-1
+      - ENVIRONMENT=production
+    command: python worker.py
+    volumes:
+      - ../logs:/app/logs
+    networks:
+      - faceit-network
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+          cpus: '0.4'
+        reservations:
+          memory: 192M
+          cpus: '0.2'
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # RQ Worker - Bulk Processing (Scalable)
+  worker-bulk:
+    image: ${DOCKER_REGISTRY:-your-dockerhub}/faceit-bot:${VERSION:-latest}
+    container_name: faceit-worker-bulk
+    restart: unless-stopped
+    env_file:
+      - ../.env.production
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      - REDIS_URL=redis://redis:6379/1
+      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_READ_URL=${DATABASE_READ_URL}
+      - WORKER_TYPE=bulk
+      - WORKER_NAME=bulk-worker-1
+      - ENVIRONMENT=production
+    command: python worker.py
+    volumes:
+      - ../logs:/app/logs
+    networks:
+      - faceit-network
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.3'
+        reservations:
+          memory: 128M
+          cpus: '0.15'
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Redis for Caching & Queues (High Availability)
+  redis:
+    image: redis:7-alpine
+    container_name: faceit-redis-production
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"  # Only localhost access
+    volumes:
+      - redis_data:/data
+      - ../config/redis-production.conf:/usr/local/etc/redis/redis.conf
+    networks:
+      - faceit-network
+    command: redis-server /usr/local/etc/redis/redis.conf --appendonly yes --save 900 1 --save 300 10 --save 60 10000
+    healthcheck:
+      test: ["CMD", "redis-cli", "--latency-history", "-i", "1", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.3'
+        reservations:
+          memory: 256M
+          cpus: '0.15'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Redis Sentinel for HA (optional)
+  redis-sentinel:
+    image: redis:7-alpine
+    container_name: faceit-redis-sentinel
+    restart: unless-stopped
+    volumes:
+      - ../config/sentinel.conf:/usr/local/etc/redis/sentinel.conf
+    networks:
+      - faceit-network
+    command: redis-sentinel /usr/local/etc/redis/sentinel.conf
+    depends_on:
+      - redis
+    profiles:
+      - ha
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: '0.1'
+
+  # Nginx reverse proxy with SSL
+  nginx:
+    image: nginx:alpine
+    container_name: faceit-nginx-production
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ../nginx/production.conf:/etc/nginx/conf.d/default.conf
+      - ../nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ../ssl/production:/etc/nginx/ssl
+      - nginx_logs:/var/log/nginx
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    networks:
+      - faceit-network
+    depends_on:
+      - faceit-bot
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: '0.1'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Monitoring and metrics collection
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: faceit-prometheus
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    networks:
+      - faceit-network
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    profiles:
+      - monitoring
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.2'
+
+  # Grafana for dashboards
+  grafana:
+    image: grafana/grafana:latest
+    container_name: faceit-grafana
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ../monitoring/grafana/provisioning:/etc/grafana/provisioning
+    networks:
+      - faceit-network
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_INSTALL_PLUGINS=redis-datasource
+    depends_on:
+      - prometheus
+    profiles:
+      - monitoring
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.1'
+
+  # Node Exporter for system metrics
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: faceit-node-exporter
+    restart: unless-stopped
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    networks:
+      - faceit-network
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    profiles:
+      - monitoring
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: '0.05'
+
+  # Log aggregation with Fluentd
+  fluentd:
+    image: fluent/fluentd:v1.16-debian-1
+    container_name: faceit-fluentd
+    restart: unless-stopped
+    volumes:
+      - ../logs:/fluentd/log
+      - ../monitoring/fluentd-production.conf:/fluentd/etc/fluent.conf
+      - fluentd_data:/fluentd/log/buffer
+    networks:
+      - faceit-network
+    environment:
+      - FLUENTD_CONF=fluent.conf
+    profiles:
+      - logging
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.1'
+
+  # Automated backup service
+  backup:
+    image: postgres:15-alpine
+    container_name: faceit-backup
+    restart: "no"
+    volumes:
+      - ../backups:/backups
+      - ../scripts/backup-production.sh:/backup.sh
+    networks:
+      - faceit-network
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - S3_BUCKET=${S3_BACKUP_BUCKET}
+    profiles:
+      - backup
+    command: /backup.sh
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.1'
+
+  # SSL certificate renewal
+  certbot:
+    image: certbot/certbot
+    container_name: faceit-certbot
+    restart: "no"
+    volumes:
+      - /etc/letsencrypt:/etc/letsencrypt
+      - /var/www/certbot:/var/www/certbot
+    profiles:
+      - ssl-renewal
+    command: certonly --webroot --webroot-path=/var/www/certbot --email admin@yourdomain.com --agree-tos --no-eff-email -d bot.yourdomain.com
+
+networks:
+  faceit-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.18.0.0/16
+    driver_opts:
+      com.docker.network.bridge.name: br-faceit-prod
+
+volumes:
+  redis_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /opt/faceit-bot/volumes/redis
+  nginx_logs:
+    driver: local
+  prometheus_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /opt/faceit-bot/volumes/prometheus
+  grafana_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /opt/faceit-bot/volumes/grafana
+  fluentd_data:
+    driver: local
+
+# Production-specific configurations
+x-production-defaults: &production-defaults
+  restart: unless-stopped
+  logging:
+    driver: "json-file"
+    options:
+      max-size: "10m"
+      max-file: "3"
+  deploy:
+    restart_policy:
+      condition: any
+      delay: 5s
+      max_attempts: 3
+      window: 120s

@@ -36,8 +36,14 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 
-# Environments
+# Environment files with secrets - ВАЖНО!
 .env
+.env.local
+.env.docker
+.env.production
+.env.staging
+
+# Virtual environments
 .venv
 env/
 venv/

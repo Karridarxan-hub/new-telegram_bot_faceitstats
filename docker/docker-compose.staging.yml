@@ -1,0 +1,261 @@
+version: '3.8'
+
+services:
+  # Main Telegram Bot
+  faceit-bot:
+    build: 
+      context: ..
+      dockerfile: docker/Dockerfile.staging
+      args:
+        VERSION: ${VERSION:-staging-latest}
+    image: ${DOCKER_REGISTRY:-your-dockerhub}/faceit-bot:${VERSION:-staging-latest}
+    container_name: faceit-bot-staging
+    restart: unless-stopped
+    env_file:
+      - ../.env.staging
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql+asyncpg://faceit_user:${DB_PASSWORD}@postgres:5432/faceit_bot
+      - ENVIRONMENT=staging
+    command: python main.py
+    volumes:
+      - ../data:/app/data
+      - ../logs:/app/logs
+      - ./health:/app/health
+    networks:
+      - faceit-network
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"  # Health check endpoint
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.3'
+        reservations:
+          memory: 128M
+          cpus: '0.15'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # RQ Worker - All tasks in staging
+  worker:
+    build: 
+      context: ..
+      dockerfile: docker/Dockerfile.staging
+      args:
+        VERSION: ${VERSION:-staging-latest}
+    image: ${DOCKER_REGISTRY:-your-dockerhub}/faceit-bot:${VERSION:-staging-latest}
+    container_name: faceit-worker-staging
+    restart: unless-stopped
+    env_file:
+      - ../.env.staging
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      - REDIS_URL=redis://redis:6379/1
+      - DATABASE_URL=postgresql+asyncpg://faceit_user:${DB_PASSWORD}@postgres:5432/faceit_bot
+      - WORKER_TYPE=all
+      - WORKER_NAME=staging-worker-1
+      - ENVIRONMENT=staging
+    command: python worker.py
+    volumes:
+      - ../logs:/app/logs
+    networks:
+      - faceit-network
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
+        reservations:
+          memory: 128M
+          cpus: '0.125'
+
+  # Redis for Caching & Queues
+  redis:
+    image: redis:7-alpine
+    container_name: faceit-redis-staging
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+      - ../config/redis.conf:/usr/local/etc/redis/redis.conf
+    networks:
+      - faceit-network
+    command: redis-server /usr/local/etc/redis/redis.conf --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.1'
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: faceit-postgres-staging
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: faceit_bot
+      POSTGRES_USER: faceit_user
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-staging_password}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+      PGUSER: faceit_user
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../database/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+      - ../database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - faceit-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U faceit_user -d faceit_bot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.2'
+
+  # RQ Dashboard for monitoring
+  rq-dashboard:
+    image: eoranged/rq-dashboard:latest
+    container_name: faceit-rq-dashboard-staging
+    restart: unless-stopped
+    ports:
+      - "9181:9181"
+    environment:
+      - RQ_DASHBOARD_REDIS_URL=redis://redis:6379/1
+      - RQ_DASHBOARD_USERNAME=admin
+      - RQ_DASHBOARD_PASSWORD=${RQ_DASHBOARD_PASSWORD:-staging123}
+    networks:
+      - faceit-network
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: '0.05'
+
+  # Nginx reverse proxy
+  nginx:
+    image: nginx:alpine
+    container_name: faceit-nginx-staging
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ../nginx/staging.conf:/etc/nginx/conf.d/default.conf
+      - ../ssl/staging:/etc/nginx/ssl
+      - nginx_logs:/var/log/nginx
+    networks:
+      - faceit-network
+    depends_on:
+      - faceit-bot
+    deploy:
+      resources:
+        limits:
+          memory: 32M
+          cpus: '0.05'
+
+  # Monitoring and log aggregation
+  fluentd:
+    image: fluent/fluentd:v1.16-debian-1
+    container_name: faceit-fluentd-staging
+    restart: unless-stopped
+    volumes:
+      - ../logs:/fluentd/log
+      - ../monitoring/fluentd-staging.conf:/fluentd/etc/fluent.conf
+    networks:
+      - faceit-network
+    environment:
+      - FLUENTD_CONF=fluent.conf
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: '0.05'
+
+  # Postgres backup utility
+  postgres-backup:
+    image: postgres:15-alpine
+    container_name: faceit-backup-staging
+    restart: "no"
+    environment:
+      PGPASSWORD: ${DB_PASSWORD:-staging_password}
+    volumes:
+      - ../backups:/backups
+      - ../scripts/backup-postgres.sh:/backup.sh
+    networks:
+      - faceit-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles:
+      - backup
+    command: /backup.sh
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: '0.05'
+
+networks:
+  faceit-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  redis_data:
+    driver: local
+  postgres_data:
+    driver: local
+  nginx_logs:
+    driver: local
+
+# Health check and monitoring setup
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 30s
+  timeout: 10s
+  retries: 3
+  start_period: 30s
+
+# Resource defaults for staging
+x-resource-defaults: &resource-defaults
+  limits:
+    memory: 256M
+    cpus: '0.25'
+  reservations:
+    memory: 128M
+    cpus: '0.125'

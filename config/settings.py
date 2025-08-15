@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     # Telegram Bot configuration
     telegram_bot_token: str = Field(..., env="TELEGRAM_BOT_TOKEN")
     telegram_chat_id: Optional[str] = Field(None, env="TELEGRAM_CHAT_ID")
+    admin_user_ids: Optional[str] = Field(None, env="ADMIN_USER_IDS")
     
     # FACEIT API configuration
     faceit_api_key: str = Field(..., env="FACEIT_API_KEY")
@@ -33,7 +34,7 @@ class Settings(BaseSettings):
     data_file_path: str = Field("data.json", env="DATA_FILE_PATH")
     
     # Redis configuration (Phase 1)
-    redis_url: str = Field("redis://redis:6379", env="REDIS_URL")
+    redis_url: str = Field("redis://localhost:6379", env="REDIS_URL")
     redis_password: Optional[str] = Field(None, env="REDIS_PASSWORD")
     redis_max_connections: int = Field(10, env="REDIS_MAX_CONNECTIONS")
     

@@ -52,42 +52,57 @@ class CachedFaceitAPI:
         return await self.api.get_match_stats(match_id)
     
     async def get_matches_with_stats(self, player_id: str, limit: int = 20, game: str = "cs2"):
-        """Get matches with stats (optimized with Redis caching)."""
+        """Get matches with stats (optimized with Redis caching and performance monitoring)."""
         import asyncio
+        import time
+        from utils.circuit_breaker import performance_monitor
         
-        # Get matches using cached method
-        matches = await self.get_player_matches(player_id, limit, 0, game)
+        start_time = time.time()
         
-        # Parallel stats gathering with Redis caching
-        match_stats_tasks = []
-        for match in matches:
-            if match.status.upper() == "FINISHED":
-                task = self.get_match_stats(match.match_id)
-                match_stats_tasks.append(task)
-            else:
-                match_stats_tasks.append(asyncio.create_task(self._return_none()))
-        
-        # Limit concurrent requests
-        semaphore = asyncio.Semaphore(8)
-        
-        async def limited_task(task):
-            async with semaphore:
-                return await task
-        
-        stats_results = await asyncio.gather(
-            *[limited_task(task) for task in match_stats_tasks],
-            return_exceptions=True
-        )
-        
-        # Combine results
-        matches_with_stats = []
-        for i, match in enumerate(matches):
-            stats = stats_results[i] if i < len(stats_results) else None
-            if isinstance(stats, Exception):
-                stats = None
-            matches_with_stats.append((match, stats))
-        
-        return matches_with_stats
+        try:
+            # Get matches using cached method
+            matches = await self.get_player_matches(player_id, limit, 0, game)
+            
+            # Parallel stats gathering with Redis caching
+            match_stats_tasks = []
+            for match in matches:
+                if match.status.upper() == "FINISHED":
+                    task = self.get_match_stats(match.match_id)
+                    match_stats_tasks.append(task)
+                else:
+                    match_stats_tasks.append(asyncio.create_task(self._return_none()))
+            
+            # Optimized concurrent request limit based on performance
+            # Reduce from 8 to 5 for better stability
+            semaphore = asyncio.Semaphore(5)
+            
+            async def limited_task(task):
+                async with semaphore:
+                    return await task
+            
+            stats_results = await asyncio.gather(
+                *[limited_task(task) for task in match_stats_tasks],
+                return_exceptions=True
+            )
+            
+            # Combine results
+            matches_with_stats = []
+            for i, match in enumerate(matches):
+                stats = stats_results[i] if i < len(stats_results) else None
+                if isinstance(stats, Exception):
+                    stats = None
+                matches_with_stats.append((match, stats))
+            
+            # Record performance metrics
+            duration = time.time() - start_time
+            performance_monitor.record_call("get_matches_with_stats", duration, True)
+            
+            return matches_with_stats
+            
+        except Exception as e:
+            duration = time.time() - start_time
+            performance_monitor.record_call("get_matches_with_stats", duration, False)
+            raise
     
     async def _return_none(self):
         """Helper function to return None."""

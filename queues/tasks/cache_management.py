@@ -7,6 +7,7 @@ optimal performance and efficient memory usage across the Redis cache system.
 import logging
 import asyncio
 import json
+import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any, Set
 from dataclasses import dataclass, asdict
@@ -18,8 +19,7 @@ from faceit.api import FaceitAPI, FaceitAPIError
 from utils.cache import CachedFaceitAPI
 from utils.storage import storage
 from utils.redis_cache import (
-    player_cache, match_cache, stats_cache, 
-    get_redis_client, get_all_cache_stats
+    player_cache, match_cache, stats_cache
 )
 from config.settings import settings
 
@@ -312,7 +312,7 @@ def refresh_popular_data_task(
             
             # Rate limiting between batches
             if i + batch_size < len(items_to_refresh):
-                await asyncio.sleep(2)
+                time.sleep(2)
         
         processing_time = int((datetime.now() - start_time).total_seconds() * 1000)
         
@@ -392,7 +392,8 @@ def cache_health_check_task(
         
         # Hit rate analysis
         if detailed_analysis:
-            hitrate_result = _run_async(_analyze_hit_rates())\n            health_results["checks_performed"].append("hit_rates")
+            hitrate_result = _run_async(_analyze_hit_rates())
+            health_results["checks_performed"].append("hit_rates")
             health_results["hit_rate_analysis"] = hitrate_result.details
             
             avg_hit_rate = hitrate_result.details.get("average_hit_rate", 0)

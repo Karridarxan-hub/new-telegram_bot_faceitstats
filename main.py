@@ -54,21 +54,45 @@ async def main():
         validate_settings()
         logger.info("Configuration validated successfully")
         
-        # Initialize Redis cache
-        logger.info("🔄 Initializing Redis cache...")
-        await init_redis_cache(settings.redis_url)
+        # Initialize Redis cache (with fallback)
+        redis_available = False
+        try:
+            logger.info("🔄 Initializing Redis cache...")
+            await init_redis_cache(settings.redis_url)
+            redis_available = True
+            logger.info("✅ Redis cache connected successfully")
+        except Exception as e:
+            logger.warning(f"⚠️ Redis unavailable, using in-memory cache: {e}")
+            redis_available = False
         
-        # Initialize PostgreSQL database
-        logger.info("🐘 Initializing PostgreSQL database...")
-        db_config = settings.get_database_config()
-        await init_database(db_config)
+        # Initialize PostgreSQL database (with fallback)
+        db_available = False
+        try:
+            logger.info("🐘 Initializing PostgreSQL database...")
+            db_config = settings.get_database_config()
+            await init_database(db_config)
+            
+            # Check database health
+            db_health = await get_health_status()
+            if db_health.get("connected", False):
+                logger.info(f"✅ Database connected: PostgreSQL {db_health.get('version', 'unknown')}")
+                db_available = True
+            else:
+                logger.warning(f"⚠️ Database health issue: {db_health.get('error', 'unknown')}")
+                db_available = False
+        except Exception as e:
+            logger.warning(f"⚠️ PostgreSQL unavailable, using JSON storage: {e}")
+            db_available = False
         
-        # Check database health
-        db_health = await get_health_status()
-        if db_health.get("connected", False):
-            logger.info(f"✅ Database connected: PostgreSQL {db_health.get('version', 'unknown')}")
+        # Log fallback status
+        if not redis_available and not db_available:
+            logger.info("📝 Running in lightweight mode with JSON storage and in-memory cache")
+        elif not redis_available:
+            logger.info("📝 Running with PostgreSQL and in-memory cache (Redis unavailable)")
+        elif not db_available:
+            logger.info("📝 Running with Redis cache and JSON storage (PostgreSQL unavailable)")
         else:
-            logger.warning(f"⚠️ Database health issue: {db_health.get('error', 'unknown')}")
+            logger.info("📝 Running in full enterprise mode with PostgreSQL and Redis")
         
         # Initialize bot and monitor
         bot = FaceitTelegramBot()
@@ -79,22 +103,10 @@ async def main():
             await asyncio.sleep(5)
             await monitor.start()
         
-        # Periodic subscription check task
-        async def subscription_checker():
-            while True:
-                try:
-                    await asyncio.sleep(3600)  # Check every hour
-                    expired_users = await storage.check_expired_subscriptions()
-                    if expired_users:
-                        logger.info(f"Downgraded {len(expired_users)} expired subscriptions")
-                except Exception as e:
-                    logger.error(f"Error checking subscriptions: {e}")
-        
-        # Start bot, monitor, and subscription checker
+        # Start bot and monitor
         await asyncio.gather(
             bot.start_polling(),
-            start_monitor(),
-            subscription_checker()
+            start_monitor()
         )
     
     except KeyboardInterrupt:
@@ -103,13 +115,19 @@ async def main():
         logger.error(f"Fatal error: {e}")
         sys.exit(1)
     finally:
-        # Close database connections
-        logger.info("🐘 Closing database connections...")
-        await close_database()
+        # Close database connections (if they were established)
+        try:
+            logger.info("🐘 Closing database connections...")
+            await close_database()
+        except Exception as e:
+            logger.debug(f"Database cleanup error (expected if not connected): {e}")
         
-        # Close Redis connections
-        logger.info("🔄 Closing Redis cache connections...")
-        await close_redis_cache()
+        # Close Redis connections (if they were established)
+        try:
+            logger.info("🔄 Closing Redis cache connections...")
+            await close_redis_cache()
+        except Exception as e:
+            logger.debug(f"Redis cleanup error (expected if not connected): {e}")
         
         if 'monitor' in locals():
             await monitor.stop()
